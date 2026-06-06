@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  allocateId,
   createStore,
   discoverProjects,
   parse,
@@ -188,6 +189,63 @@ test("bound store write skips byte-identical entity writes", async () => {
 
   const stat = await fs.stat(filePath);
   assert.equal(stat.mtime.getTime(), oldTimestamp.getTime());
+});
+
+test("allocateId initializes counters from existing entities and persists the next value", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-allocate-init-"));
+  const entitiesDir = path.join(root, ".worktracker", "entities");
+
+  await fs.mkdir(entitiesDir, { recursive: true });
+  await fs.copyFile(
+    path.join(entitiesRoot, "T-002-render-board.md"),
+    path.join(entitiesDir, "T-002-render-board.md")
+  );
+  await fs.copyFile(
+    path.join(entitiesRoot, "S-001-initial-board.md"),
+    path.join(entitiesDir, "S-001-initial-board.md")
+  );
+
+  const nextTaskId = await allocateId(root, "task");
+
+  assert.equal(nextTaskId, "T-003");
+  assert.equal(
+    await fs.readFile(path.join(root, ".worktracker", ".meta", "counters.json"), "utf8"),
+    '{\n  "epic": 0,\n  "story": 1,\n  "task": 3\n}\n'
+  );
+});
+
+test("bound store allocateId uses persisted counters instead of reusing removed ids", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-allocate-persisted-"));
+  const store = createStore(root);
+
+  assert.equal(await store.allocateId("epic"), "E-001");
+  assert.equal(await store.allocateId("epic"), "E-002");
+
+  await fs.mkdir(path.join(root, ".worktracker", "entities"), { recursive: true });
+
+  assert.equal(await store.allocateId("epic"), "E-003");
+});
+
+test("allocateId keeps archived ids in the initial max and zero-pads beyond three digits", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-allocate-archived-"));
+  const filePath = path.join(root, ".worktracker", "entities", "T-999-archived.md");
+
+  await write(root, {
+    id: "T-999",
+    type: "task",
+    title: "Archived task",
+    parent: "S-001",
+    status: "done",
+    dependsOn: [],
+    tags: [],
+    archived: true,
+    created: "2026-06-06T20:40:00Z",
+    updated: "2026-06-06T20:41:00Z",
+    body: "\nArchived ids still reserve their numeric suffix.\n",
+    filePath
+  });
+
+  assert.equal(await allocateId(root, "task"), "T-1000");
 });
 
 test("write rejects entity paths outside the project entity directory", async () => {

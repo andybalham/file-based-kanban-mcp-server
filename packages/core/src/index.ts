@@ -19,6 +19,7 @@ export type {
 } from "./types.js";
 
 export {
+  allocateId,
   createStore,
   discoverProjects,
   parse,

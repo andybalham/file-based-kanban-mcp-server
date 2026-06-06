@@ -29,6 +29,15 @@ const PROJECT_MARKER_PATH = path.join(".worktracker", "project.json");
 const REQUIREMENTS_SOURCE_PATH = path.join(".worktracker", "requirements", "source.md");
 
 /**
+ * Root-relative path to the per-project id counters.
+ *
+ * Counters live inside the portable `.worktracker` tree so identity allocation follows the project
+ * instead of any machine-local server registry. The value for each type is the highest id number
+ * already reserved for that type, not the next number to return.
+ */
+const COUNTERS_PATH = path.join(".worktracker", ".meta", "counters.json");
+
+/**
  * Directory names skipped by marker discovery.
  *
  * These are intentionally conservative, matching the design's standard ignores so discovery can
@@ -104,6 +113,34 @@ const ENTITY_TYPES = new Set<EntityType>(["epic", "story", "task"]);
 const STORED_STATUSES = new Set<StoredStatus>(["todo", "in-progress", "done"]);
 
 /**
+ * Prefixes used by the public human-readable entity id scheme.
+ *
+ * Keeping the mapping centralized lets allocation, filename generation, and future validators agree
+ * on the same E/S/T namespace split.
+ */
+const ENTITY_ID_PREFIX_BY_TYPE: Record<EntityType, string> = {
+  epic: "E",
+  story: "S",
+  task: "T"
+};
+
+/**
+ * Persisted shape of `.worktracker/.meta/counters.json`.
+ *
+ * Each value stores the last allocated number for the corresponding entity type. Missing files are
+ * reconstructed from existing entity frontmatter; malformed present files are rejected because they
+ * could otherwise cause id reuse.
+ */
+interface IdCounters {
+  /** Highest epic id number reserved for this project. */
+  epic: number;
+  /** Highest story id number reserved for this project. */
+  story: number;
+  /** Highest task id number reserved for this project. */
+  task: number;
+}
+
+/**
  * Bound filesystem operations for one work-tracker project root.
  *
  * Later Phase 1 tasks extend this object with write, counter, and move operations. Keeping scan and
@@ -144,6 +181,15 @@ export interface Store {
   write(entity: Entity): Promise<void>;
 
   /**
+   * Reserve and return the next id for one entity type.
+   *
+   * The first allocation in an existing project initializes `.worktracker/.meta/counters.json` from
+   * scanned frontmatter ids. Later allocations use the persisted counter so archived or removed
+   * entities never cause an id to be reused.
+   */
+  allocateId(type: EntityType): Promise<EntityId>;
+
+  /**
    * Read the marker for this project root, returning null when the root has not been initialized.
    */
   readMarker(): Promise<ProjectMarker | null>;
@@ -174,6 +220,7 @@ export function createStore(root: string): Store {
     parse,
     serialize: serializeEntity,
     write: (entity) => write(root, entity),
+    allocateId: (type) => allocateId(root, type),
     readMarker: () => readMarker(root),
     writeMarker: (marker) => writeMarker(root, marker),
     seedRequirements: (intent) => seedRequirements(root, intent)
@@ -323,6 +370,24 @@ export async function write(root: string, entity: Entity): Promise<void> {
 }
 
 /**
+ * Allocate the next project-scoped entity id and persist the updated counter atomically.
+ *
+ * This function is intentionally root-bound at the call site through `createStore(root)` because
+ * counters are not global. When no counter file exists yet, the store scans current entity
+ * frontmatter and seeds counters to the highest existing id number per type before incrementing the
+ * requested type.
+ */
+export async function allocateId(root: string, type: EntityType): Promise<EntityId> {
+  const counters = await readOrInitializeCounters(root);
+  const nextNumber = counters[type] + 1;
+  const nextCounters = { ...counters, [type]: nextNumber };
+
+  await writeCounters(root, nextCounters);
+
+  return formatEntityId(type, nextNumber);
+}
+
+/**
  * Read a project marker from `.worktracker/project.json`.
  *
  * Absence is a normal bootstrap state, so only missing files return null. Malformed JSON or schema
@@ -391,6 +456,136 @@ export async function seedRequirements(root: string, intent: string): Promise<vo
   }
 
   await atomicWriteFile(requirementsPath, intent.endsWith("\n") ? intent : `${intent}\n`);
+}
+
+/**
+ * Read the persisted counters, or initialize them from existing entity ids when absent.
+ *
+ * Initialization is a write because the design requires future allocations to use the durable
+ * project counter instead of rescanning, which is what prevents reuse after entity archival or
+ * deletion.
+ */
+async function readOrInitializeCounters(root: string): Promise<IdCounters> {
+  const existing = await readCounters(root);
+  if (existing !== null) {
+    return existing;
+  }
+
+  const initialized = await initializeCountersFromEntities(root);
+  await writeCounters(root, initialized);
+  return initialized;
+}
+
+/**
+ * Read `.worktracker/.meta/counters.json` and validate every counter value.
+ *
+ * A missing file is a normal pre-allocation state. A malformed file is not recoverable by guessing:
+ * accepting it could move a counter backwards and violate the no-reuse identity invariant.
+ */
+async function readCounters(root: string): Promise<IdCounters | null> {
+  const countersPath = path.join(root, COUNTERS_PATH);
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(countersPath, "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
+
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return {
+    epic: readCounterValue(countersPath, parsed, "epic"),
+    story: readCounterValue(countersPath, parsed, "story"),
+    task: readCounterValue(countersPath, parsed, "task")
+  };
+}
+
+/**
+ * Persist counters in canonical JSON order.
+ *
+ * Stable formatting keeps counter diffs readable and makes repeated writes with the same semantic
+ * value byte-identical, matching the repository's deterministic storage rules.
+ */
+async function writeCounters(root: string, counters: IdCounters): Promise<void> {
+  const countersPath = path.join(root, COUNTERS_PATH);
+  const canonical = `${JSON.stringify(
+    {
+      epic: counters.epic,
+      story: counters.story,
+      task: counters.task
+    },
+    null,
+    2
+  )}\n`;
+
+  await atomicWriteFile(countersPath, canonical);
+}
+
+/**
+ * Build initial counters by scanning entity frontmatter ids.
+ *
+ * Invalid id shapes are ignored here because parse/scan already validates storage shape, while
+ * graph validation will later report semantic id issues. Allocation only needs the maximum numeric
+ * suffix in the recognized namespace for each persisted type.
+ */
+async function initializeCountersFromEntities(root: string): Promise<IdCounters> {
+  const counters: IdCounters = { epic: 0, story: 0, task: 0 };
+
+  let index: Index;
+  try {
+    index = await scan(root);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return counters;
+    }
+
+    throw error;
+  }
+
+  for (const entity of index.byId.values()) {
+    const numericId = parseEntityIdNumber(entity.type, entity.id);
+    if (numericId !== null && numericId > counters[entity.type]) {
+      counters[entity.type] = numericId;
+    }
+  }
+
+  return counters;
+}
+
+/**
+ * Read one counter value from JSON and reject values that cannot represent a monotonic id suffix.
+ */
+function readCounterValue(filePath: string, data: Record<string, unknown>, key: keyof IdCounters): number {
+  const value = data[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw counterParseError(filePath, `Counter '${key}' must be a non-negative integer.`);
+  }
+
+  return value;
+}
+
+/**
+ * Extract the numeric suffix from an id only when it belongs to the requested entity type.
+ */
+function parseEntityIdNumber(type: EntityType, id: EntityId): number | null {
+  const prefix = ENTITY_ID_PREFIX_BY_TYPE[type];
+  const match = new RegExp(`^${prefix}-(\\d+)$`).exec(id);
+  if (match === null) {
+    return null;
+  }
+
+  return Number.parseInt(match[1], 10);
+}
+
+/**
+ * Format a public entity id using the design's zero-padded E/S/T scheme.
+ */
+function formatEntityId(type: EntityType, value: number): EntityId {
+  return `${ENTITY_ID_PREFIX_BY_TYPE[type]}-${String(value).padStart(3, "0")}`;
 }
 
 /**
@@ -903,6 +1098,15 @@ function readMarkerString(filePath: string, data: Record<string, unknown>, key: 
 function markerParseError(filePath: string, message: string): Error {
   const error = new Error(`${filePath}: ${message}`);
   error.name = "ProjectMarkerParseError";
+  return error;
+}
+
+/**
+ * Create a counter parse error that identifies the broken counter file.
+ */
+function counterParseError(filePath: string, message: string): Error {
+  const error = new Error(`${filePath}: ${message}`);
+  error.name = "CounterParseError";
   return error;
 }
 
