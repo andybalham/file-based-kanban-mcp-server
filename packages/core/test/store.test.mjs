@@ -13,6 +13,7 @@ import {
   scan,
   seedRequirements,
   serializeEntity,
+  write,
   writeMarker
 } from "../dist/index.js";
 
@@ -120,6 +121,96 @@ test("serializeEntity omits non-task status and round-trips through parse with s
   assert.deepEqual(reparsed.dependsOn, ["E-001", "E-009"]);
   assert.deepEqual(reparsed.tags, ["alpha", "zeta"]);
   assert.equal(reparsed.body, "\nHuman-authored epic notes.\n");
+});
+
+test("write atomically persists canonical entity bytes and round-trips through parse", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-write-entity-"));
+  const filePath = path.join(root, ".worktracker", "entities", "T-010-render-card.md");
+  const entity = {
+    id: "T-010",
+    type: "task",
+    title: "Render card",
+    parent: "S-001",
+    status: "todo",
+    dependsOn: ["T-009", "T-001"],
+    estimate: 1,
+    tags: ["ui", "phase 1"],
+    archived: false,
+    created: "2026-06-06T20:20:00Z",
+    updated: "2026-06-06T20:21:00Z",
+    body: "\n## Description\n\nPersist this body exactly.\n",
+    filePath
+  };
+
+  await write(root, entity);
+
+  assert.equal(await fs.readFile(filePath, "utf8"), serializeEntity(entity));
+
+  const reparsed = await parse(filePath);
+  assert.deepEqual(
+    {
+      ...reparsed,
+      filePath: entity.filePath
+    },
+    {
+      ...entity,
+      dependsOn: ["T-001", "T-009"],
+      tags: ["phase 1", "ui"]
+    }
+  );
+});
+
+test("bound store write skips byte-identical entity writes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-write-noop-"));
+  const filePath = path.join(root, ".worktracker", "entities", "S-010-preserve-time.md");
+  const entity = {
+    id: "S-010",
+    type: "story",
+    title: "Preserve time",
+    parent: "E-001",
+    status: "done",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-06T20:22:00Z",
+    updated: "2026-06-06T20:23:00Z",
+    body: "\nNo-op writes should not touch this file.\n",
+    filePath
+  };
+  const store = createStore(root);
+
+  await store.write(entity);
+
+  const oldTimestamp = new Date("2026-06-01T00:00:00Z");
+  await fs.utimes(filePath, oldTimestamp, oldTimestamp);
+
+  await store.write(entity);
+
+  const stat = await fs.stat(filePath);
+  assert.equal(stat.mtime.getTime(), oldTimestamp.getTime());
+});
+
+test("write rejects entity paths outside the project entity directory", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-write-guard-"));
+  const entity = {
+    id: "T-011",
+    type: "task",
+    title: "Unsafe path",
+    parent: "S-001",
+    status: "todo",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-06T20:24:00Z",
+    updated: "2026-06-06T20:25:00Z",
+    body: "\nThis should not be written.\n",
+    filePath: path.join(root, "README.md")
+  };
+
+  await assert.rejects(() => write(root, entity), {
+    name: "EntityWriteError",
+    message: /inside \.worktracker/
+  });
 });
 
 test("createStore binds scan and parse operations to a project root", async () => {

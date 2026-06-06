@@ -135,6 +135,15 @@ export interface Store {
   serialize(entity: Entity): string;
 
   /**
+   * Atomically write one entity Markdown file if its canonical bytes changed.
+   *
+   * Callers own semantic mutation rules and validation. The store only resolves the target within
+   * this project's entity directory, serializes deterministically, and suppresses byte-identical
+   * writes so `updated` timestamps do not churn on no-op mutations.
+   */
+  write(entity: Entity): Promise<void>;
+
+  /**
    * Read the marker for this project root, returning null when the root has not been initialized.
    */
   readMarker(): Promise<ProjectMarker | null>;
@@ -164,6 +173,7 @@ export function createStore(root: string): Store {
     scan: () => scan(root),
     parse,
     serialize: serializeEntity,
+    write: (entity) => write(root, entity),
     readMarker: () => readMarker(root),
     writeMarker: (marker) => writeMarker(root, marker),
     seedRequirements: (intent) => seedRequirements(root, intent)
@@ -285,6 +295,31 @@ export function serializeEntity(entity: Entity): string {
   );
 
   return `---\n${frontmatter.join("\n")}\n---\n${entity.body}`;
+}
+
+/**
+ * Atomically write one entity using its canonical serialized representation.
+ *
+ * Entity bodies remain caller-owned; this function writes the exact body supplied on the entity and
+ * never derives or edits Markdown content. The on-disk comparison happens before opening a temp
+ * file so semantic no-ops leave timestamps and filesystem watcher state untouched.
+ */
+export async function write(root: string, entity: Entity): Promise<void> {
+  const filePath = resolveEntityWritePath(root, entity.filePath);
+  const serialized = serializeEntity({ ...entity, filePath });
+
+  try {
+    const existing = await fs.readFile(filePath, "utf8");
+    if (existing === serialized) {
+      return;
+    }
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  await atomicWriteFile(filePath, serialized);
 }
 
 /**
@@ -431,6 +466,38 @@ async function discoverProjectsUnder(
  */
 function shouldIgnoreDiscoveryDirectory(name: string): boolean {
   return DISCOVERY_IGNORED_DIRECTORIES.has(name);
+}
+
+/**
+ * Resolve an entity write target while preserving the project boundary.
+ *
+ * The public `Entity.filePath` records the current file path discovered by scan, so callers may pass
+ * an absolute path for existing files. Future create flows may pass a path relative to the project
+ * root. In both cases the write target must stay inside `.worktracker/entities/` and use Markdown
+ * storage, preventing a malformed mutation from writing arbitrary repository files.
+ */
+function resolveEntityWritePath(root: string, filePath: string): string {
+  const resolvedRoot = path.resolve(root);
+  const entitiesRoot = path.resolve(resolvedRoot, ENTITIES_DIR);
+  const resolvedFilePath = path.resolve(resolvedRoot, filePath);
+
+  if (!isPathInsideDirectory(resolvedFilePath, entitiesRoot)) {
+    throw entityWriteError(filePath, `Entity file path must be inside ${ENTITIES_DIR}.`);
+  }
+
+  if (path.extname(resolvedFilePath).toLowerCase() !== ".md") {
+    throw entityWriteError(filePath, "Entity file path must use the .md extension.");
+  }
+
+  return resolvedFilePath;
+}
+
+/**
+ * Check whether a resolved candidate path is inside a resolved parent directory.
+ */
+function isPathInsideDirectory(candidate: string, directory: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return relative.length === 0 || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 /**
@@ -836,6 +903,15 @@ function readMarkerString(filePath: string, data: Record<string, unknown>, key: 
 function markerParseError(filePath: string, message: string): Error {
   const error = new Error(`${filePath}: ${message}`);
   error.name = "ProjectMarkerParseError";
+  return error;
+}
+
+/**
+ * Create a write error that identifies the unsafe or invalid entity path.
+ */
+function entityWriteError(filePath: string, message: string): Error {
+  const error = new Error(`${filePath}: ${message}`);
+  error.name = "EntityWriteError";
   return error;
 }
 

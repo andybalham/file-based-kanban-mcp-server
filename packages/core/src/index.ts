@@ -26,6 +26,7 @@ export {
   scan,
   seedRequirements,
   serializeEntity,
+  write,
   writeMarker
 } from "./store.js";
 export type { DiscoveredProject, Store } from "./store.js";
