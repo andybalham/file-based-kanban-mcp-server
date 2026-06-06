@@ -36,6 +36,13 @@ async function pathExists(filePath) {
   }
 }
 
+async function copyFixtureProject() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-phase1-acceptance-"));
+  const projectRoot = path.join(root, "minimal-project");
+  await fs.cp(fixtureRoot, projectRoot, { recursive: true });
+  return projectRoot;
+}
+
 test("parse reads frontmatter into the stable Entity shape and preserves Markdown body", async () => {
   const entity = await parse(path.join(entitiesRoot, "T-002-render-board.md"));
 
@@ -511,5 +518,104 @@ test("discoverProjects honors gitignore directory rules while scanning for marke
   assert.deepEqual(
     discovered.map((project) => project.marker.projectId),
     ["wt_negated", "wt_nested_anchored", "wt_visible"]
+  );
+});
+
+test("phase 1 core store acceptance criteria hold together", async () => {
+  const projectRoot = await copyFixtureProject();
+  const store = createStore(projectRoot);
+
+  const index = await store.scan();
+  assert.deepEqual([...index.byId.keys()], ["E-001", "S-001", "T-001", "T-002"]);
+  assert.deepEqual(index.childrenOf.get("E-001"), ["S-001"]);
+  assert.deepEqual(index.childrenOf.get("S-001"), ["T-001", "T-002"]);
+
+  for (const entity of index.byId.values()) {
+    const beforeWrite = await fs.readFile(entity.filePath, "utf8");
+
+    await store.write(entity);
+
+    const afterWrite = await fs.readFile(entity.filePath, "utf8");
+    const reparsed = await store.parse(entity.filePath);
+
+    assert.equal(afterWrite, beforeWrite);
+    assert.match(afterWrite, /^dependsOn: \[/m);
+    assert.deepEqual(
+      {
+        ...reparsed,
+        filePath: entity.filePath
+      },
+      entity
+    );
+  }
+
+  const allocatedTaskId = await store.allocateId("task");
+  const archivedFilePath = path.join(projectRoot, ".worktracker", "entities", `${allocatedTaskId}-archived.md`);
+
+  assert.equal(allocatedTaskId, "T-003");
+
+  await store.write({
+    id: allocatedTaskId,
+    type: "task",
+    title: "Archived acceptance task",
+    parent: "S-001",
+    status: "done",
+    dependsOn: [],
+    tags: [],
+    archived: true,
+    created: "2026-06-06T20:50:00Z",
+    updated: "2026-06-06T20:51:00Z",
+    body: "\nArchived ids still count for allocation.\n",
+    filePath: archivedFilePath
+  });
+
+  await fs.unlink(archivedFilePath);
+
+  assert.equal(await store.allocateId("task"), "T-004");
+
+  const moveTargetPath = path.join(projectRoot, ".worktracker", "entities", "T-002-render-board.md");
+  const moveBefore = await fs.readFile(moveTargetPath, "utf8");
+
+  await store.move("T-002", "S-002");
+
+  const moveAfter = await fs.readFile(moveTargetPath, "utf8");
+  const moved = await store.parse(moveTargetPath);
+
+  assert.equal(moved.parent, "S-002");
+  assert.equal(moved.body, "\n## Description\n\nRender the fixture board after the marker task is complete.\n\n## Acceptance Criteria\n\n- [ ] The task is ready when `T-001` is done.\n");
+  assert.notEqual(moveAfter, moveBefore);
+  assert.match(moveAfter, /^parent: S-002$/m);
+  assert.doesNotMatch(moveAfter, /T-002-S-002/);
+  assert.equal(await pathExists(path.join(projectRoot, ".worktracker", "entities", "T-002-S-002.md")), false);
+
+  const watchRoot = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-phase1-discovery-"));
+  const activeRoot = path.join(watchRoot, "active");
+  const nestedRoot = path.join(activeRoot, "fixtures", "nested");
+  const ignoredRoots = [
+    path.join(watchRoot, ".git", "hidden"),
+    path.join(watchRoot, "node_modules", "dependency"),
+    path.join(watchRoot, "dist", "generated")
+  ];
+
+  await fs.cp(projectRoot, activeRoot, { recursive: true });
+  await writeMarker(nestedRoot, {
+    projectId: "wt_nested_acceptance",
+    title: "Nested Acceptance Project",
+    created: "2026-06-06T20:52:00Z"
+  });
+
+  for (const [index, ignoredRoot] of ignoredRoots.entries()) {
+    await writeMarker(ignoredRoot, {
+      projectId: `wt_ignored_acceptance_${index}`,
+      title: `Ignored Acceptance Project ${index}`,
+      created: "2026-06-06T20:53:00Z"
+    });
+  }
+
+  const discovered = await discoverProjects([watchRoot]);
+
+  assert.deepEqual(
+    discovered.map((project) => project.marker.projectId),
+    ["wt_fixture_minimal"]
   );
 });
