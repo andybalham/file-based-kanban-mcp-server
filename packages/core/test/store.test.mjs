@@ -233,3 +233,50 @@ test("discoverProjects ignores standard noisy directories and does not descend p
     ["wt_active"]
   );
 });
+
+test("discoverProjects honors gitignore directory rules while scanning for markers", async () => {
+  const watchRoot = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-discover-gitignore-"));
+  await fs.writeFile(
+    path.join(watchRoot, ".gitignore"),
+    ["ignored-repo/", "*.generated/", "/anchored-only/", "ignored-*", "!ignored-allowed", ""].join("\n"),
+    "utf8"
+  );
+
+  await writeMarker(path.join(watchRoot, "visible-repo"), {
+    projectId: "wt_visible",
+    title: "Visible Project",
+    created: "2026-06-06T20:10:00Z"
+  });
+  await writeMarker(path.join(watchRoot, "ignored-repo"), {
+    projectId: "wt_ignored_directory",
+    title: "Ignored Directory Project",
+    created: "2026-06-06T20:11:00Z"
+  });
+  await writeMarker(path.join(watchRoot, "snapshot.generated"), {
+    projectId: "wt_ignored_glob",
+    title: "Ignored Glob Project",
+    created: "2026-06-06T20:12:00Z"
+  });
+  await writeMarker(path.join(watchRoot, "anchored-only"), {
+    projectId: "wt_ignored_rooted",
+    title: "Ignored Rooted Project",
+    created: "2026-06-06T20:13:00Z"
+  });
+  await writeMarker(path.join(watchRoot, "nested", "anchored-only"), {
+    projectId: "wt_nested_anchored",
+    title: "Nested Anchored Project",
+    created: "2026-06-06T20:14:00Z"
+  });
+  await writeMarker(path.join(watchRoot, "ignored-allowed"), {
+    projectId: "wt_negated",
+    title: "Negated Project",
+    created: "2026-06-06T20:15:00Z"
+  });
+
+  const discovered = await discoverProjects([watchRoot]);
+
+  assert.deepEqual(
+    discovered.map((project) => project.marker.projectId),
+    ["wt_negated", "wt_nested_anchored", "wt_visible"]
+  );
+});

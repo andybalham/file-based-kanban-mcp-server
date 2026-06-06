@@ -38,6 +38,46 @@ const REQUIREMENTS_SOURCE_PATH = path.join(".worktracker", "requirements", "sour
 const DISCOVERY_IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist"]);
 
 /**
+ * File name whose patterns further prune marker discovery below each scanned directory.
+ *
+ * Discovery only needs directory-level decisions, but honoring repository-local ignore files keeps
+ * cloned fixture trees, vendored examples, and generated folders from accidentally registering
+ * projects that the repository has already declared out of scope.
+ */
+const GITIGNORE_FILE_NAME = ".gitignore";
+
+/**
+ * One parsed `.gitignore` rule used by marker discovery.
+ *
+ * The rule stores paths in POSIX form because `.gitignore` syntax always uses `/` separators even
+ * when this package runs on Windows.
+ */
+interface DiscoveryIgnoreRule {
+  /** Directory, relative to the watch root, where the `.gitignore` file that declared this rule lives. */
+  baseRelativePath: string;
+  /** Pattern text after removing gitignore-only markers such as `!`, leading `/`, and trailing `/`. */
+  pattern: string;
+  /** Whether this rule re-includes a path ignored by an earlier rule. */
+  negated: boolean;
+  /** Whether the original pattern ended in `/`, documenting that only directories should match. */
+  directoryOnly: boolean;
+  /** Whether the original pattern was rooted to the directory containing the `.gitignore` file. */
+  rooted: boolean;
+  /** Whether matching must use the whole path below the rule base instead of any single segment. */
+  hasSlash: boolean;
+}
+
+/**
+ * Immutable traversal context for one discovery walk.
+ */
+interface DiscoveryContext {
+  /** Absolute watch root currently being scanned. */
+  watchRoot: string;
+  /** Active ignore rules inherited from ancestor `.gitignore` files. */
+  ignoreRules: DiscoveryIgnoreRule[];
+}
+
+/**
  * One project found by scanning configured watch roots for authoritative markers.
  */
 export interface DiscoveredProject {
@@ -330,7 +370,7 @@ export async function discoverProjects(watchRoots: string[]): Promise<Discovered
 
   for (const watchRoot of watchRoots) {
     const resolvedRoot = path.resolve(watchRoot);
-    await discoverProjectsUnder(resolvedRoot, discovered);
+    await discoverProjectsUnder(resolvedRoot, discovered, { watchRoot: resolvedRoot, ignoreRules: [] });
   }
 
   return [...discovered.values()].sort((a, b) => a.root.localeCompare(b.root));
@@ -339,7 +379,11 @@ export async function discoverProjects(watchRoots: string[]): Promise<Discovered
 /**
  * Recursively scan one directory for project markers while preserving discovery invariants.
  */
-async function discoverProjectsUnder(root: string, discovered: Map<string, DiscoveredProject>): Promise<void> {
+async function discoverProjectsUnder(
+  root: string,
+  discovered: Map<string, DiscoveredProject>,
+  context: DiscoveryContext
+): Promise<void> {
   if (shouldIgnoreDiscoveryDirectory(path.basename(root))) {
     return;
   }
@@ -361,13 +405,24 @@ async function discoverProjectsUnder(root: string, discovered: Map<string, Disco
     throw error;
   }
 
+  const ignoreRules = [
+    ...context.ignoreRules,
+    ...(await readDiscoveryIgnoreRules(root, toPosixRelativePath(context.watchRoot, root)))
+  ];
+
   const childDirectories = entries
-    .filter((entry) => entry.isDirectory() && !shouldIgnoreDiscoveryDirectory(entry.name))
+    .filter((entry) => {
+      if (!entry.isDirectory() || shouldIgnoreDiscoveryDirectory(entry.name)) {
+        return false;
+      }
+
+      return !isDiscoveryPathIgnored(toPosixRelativePath(context.watchRoot, path.join(root, entry.name)), ignoreRules);
+    })
     .map((entry) => path.join(root, entry.name))
     .sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
 
   for (const childDirectory of childDirectories) {
-    await discoverProjectsUnder(childDirectory, discovered);
+    await discoverProjectsUnder(childDirectory, discovered, { watchRoot: context.watchRoot, ignoreRules });
   }
 }
 
@@ -376,6 +431,210 @@ async function discoverProjectsUnder(root: string, discovered: Map<string, Disco
  */
 function shouldIgnoreDiscoveryDirectory(name: string): boolean {
   return DISCOVERY_IGNORED_DIRECTORIES.has(name);
+}
+
+/**
+ * Read `.gitignore` rules that affect marker discovery below one directory.
+ *
+ * Missing ignore files are expected for most directories, so only absent files are swallowed. Other
+ * read failures are propagated because silently scanning past an unreadable ignore file could make
+ * discovery register projects the user intended to exclude.
+ */
+async function readDiscoveryIgnoreRules(root: string, baseRelativePath: string): Promise<DiscoveryIgnoreRule[]> {
+  const ignorePath = path.join(root, GITIGNORE_FILE_NAME);
+
+  let content: string;
+  try {
+    content = await fs.readFile(ignorePath, "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+
+  return content
+    .split(/\r?\n/)
+    .map((line) => parseDiscoveryIgnoreRule(line, baseRelativePath))
+    .filter((rule): rule is DiscoveryIgnoreRule => rule !== null);
+}
+
+/**
+ * Parse the subset of `.gitignore` syntax needed for deterministic directory traversal.
+ *
+ * The implementation intentionally ignores file-only concerns because marker discovery only
+ * descends through directories. It still preserves core gitignore behavior that matters here:
+ * comments, negation, rooted patterns, directory-only patterns, and simple glob wildcards.
+ */
+function parseDiscoveryIgnoreRule(line: string, baseRelativePath: string): DiscoveryIgnoreRule | null {
+  let pattern = line.trim();
+  if (pattern.length === 0 || pattern.startsWith("#")) {
+    return null;
+  }
+
+  let negated = false;
+  if (pattern.startsWith("!")) {
+    negated = true;
+    pattern = pattern.slice(1).trim();
+  }
+
+  if (pattern.length === 0) {
+    return null;
+  }
+
+  const directoryOnly = pattern.endsWith("/");
+  if (directoryOnly) {
+    pattern = pattern.slice(0, -1);
+  }
+
+  const rooted = pattern.startsWith("/");
+  if (rooted) {
+    pattern = pattern.slice(1);
+  }
+
+  pattern = normalizeGitignorePattern(pattern);
+  if (pattern.length === 0) {
+    return null;
+  }
+
+  return {
+    baseRelativePath,
+    pattern,
+    negated,
+    directoryOnly,
+    rooted,
+    hasSlash: pattern.includes("/")
+  };
+}
+
+/**
+ * Decide whether a directory should be skipped by the active `.gitignore` rules.
+ *
+ * Rules are evaluated in file order across ancestors, with the last matching rule winning. That
+ * mirrors the behavior agents expect from Git while keeping traversal deterministic and local to
+ * the current watch root.
+ */
+function isDiscoveryPathIgnored(relativeDirectoryPath: string, rules: DiscoveryIgnoreRule[]): boolean {
+  let ignored = false;
+
+  for (const rule of rules) {
+    if (matchesDiscoveryIgnoreRule(relativeDirectoryPath, rule)) {
+      ignored = !rule.negated;
+    }
+  }
+
+  return ignored;
+}
+
+/**
+ * Match one directory path against one parsed `.gitignore` rule.
+ */
+function matchesDiscoveryIgnoreRule(relativeDirectoryPath: string, rule: DiscoveryIgnoreRule): boolean {
+  const pathBelowRuleBase = getPathBelowRuleBase(relativeDirectoryPath, rule.baseRelativePath);
+  if (pathBelowRuleBase === null || pathBelowRuleBase.length === 0) {
+    return false;
+  }
+
+  if (rule.rooted || rule.hasSlash) {
+    return matchesGitignorePathPattern(rule.pattern, pathBelowRuleBase);
+  }
+
+  return pathBelowRuleBase.split("/").some((segment) => matchesGitignoreSegmentPattern(rule.pattern, segment));
+}
+
+/**
+ * Return the candidate path relative to the directory where a `.gitignore` rule was declared.
+ */
+function getPathBelowRuleBase(relativeDirectoryPath: string, baseRelativePath: string): string | null {
+  if (baseRelativePath.length === 0) {
+    return relativeDirectoryPath;
+  }
+
+  if (relativeDirectoryPath === baseRelativePath) {
+    return "";
+  }
+
+  const basePrefix = `${baseRelativePath}/`;
+  if (!relativeDirectoryPath.startsWith(basePrefix)) {
+    return null;
+  }
+
+  return relativeDirectoryPath.slice(basePrefix.length);
+}
+
+/**
+ * Match a path-scoped gitignore pattern against a directory path below the rule base.
+ */
+function matchesGitignorePathPattern(pattern: string, value: string): boolean {
+  if (pattern.endsWith("/**") && value === pattern.slice(0, -3)) {
+    return true;
+  }
+
+  return gitignorePatternToRegExp(pattern, true).test(value);
+}
+
+/**
+ * Match a single path segment against an unrooted gitignore pattern.
+ */
+function matchesGitignoreSegmentPattern(pattern: string, value: string): boolean {
+  return gitignorePatternToRegExp(pattern, false).test(value);
+}
+
+/**
+ * Convert a small, deterministic subset of gitignore globs to a regular expression.
+ *
+ * `*` and `?` never cross directory separators unless they are part of `**`, which is the one glob
+ * form that can intentionally span multiple path segments.
+ */
+function gitignorePatternToRegExp(pattern: string, pathPattern: boolean): RegExp {
+  let source = "";
+
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    const nextCharacter = pattern[index + 1];
+
+    if (character === "*" && nextCharacter === "*") {
+      source += ".*";
+      index += 1;
+      continue;
+    }
+
+    if (character === "*") {
+      source += pathPattern ? "[^/]*" : ".*";
+      continue;
+    }
+
+    if (character === "?") {
+      source += pathPattern ? "[^/]" : ".";
+      continue;
+    }
+
+    source += escapeRegExp(character);
+  }
+
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * Normalize `.gitignore` pattern separators to the platform-independent form used internally.
+ */
+function normalizeGitignorePattern(pattern: string): string {
+  return pattern.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+/g, "/");
+}
+
+/**
+ * Convert an absolute child path to a POSIX-style path relative to the watch root.
+ */
+function toPosixRelativePath(root: string, child: string): string {
+  return path.relative(root, child).split(path.sep).filter(Boolean).join("/");
+}
+
+/**
+ * Escape regular expression syntax while translating glob patterns.
+ */
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 /**
