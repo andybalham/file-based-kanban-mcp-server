@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc -b packages/core packages/server && npm run build -w @file-kanban/ui",
     "lint": "tsc -b --noEmit packages/core packages/server && npm run lint -w @file-kanban/ui",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "check:phase0": "npm run build && npm run lint && npm test"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

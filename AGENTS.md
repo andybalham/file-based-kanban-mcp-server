@@ -215,3 +215,13 @@ Do not rewrite design documents, UI references, generated artifacts, or task met
 Do not revert user changes. If unrelated local changes are present, work around them. If they directly block the task, ask for direction.
 
 Prefer implementation that follows the existing design over inventing abstractions early.
+
+## Code Commenting
+
+Verbosely comment all code.
+
+- Explain the purpose and intent of exported types, functions, modules, and components.
+- Comment important fields on public data structures so future agents know how each value maps to the technical design.
+- Add comments before non-obvious logic, validation, serialization, filesystem behavior, graph traversal, status computation, server routing, watcher handling, and UI state derivation.
+- Keep comments accurate and update them in the same change as the code they describe.
+- Prefer comments that explain why the code exists and what invariant it preserves over comments that merely restate syntax.

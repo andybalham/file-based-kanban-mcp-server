@@ -1,3 +1,9 @@
+/**
+ * Public API barrel for the core package.
+ *
+ * Phase 0 exports only the shared data model. Later phases should add store, validation, graph,
+ * status, and generator exports here so server code imports through one stable boundary.
+ */
 export type {
   EffectiveStatus,
   Entity,
@@ -7,7 +13,7 @@ export type {
   ProjectId,
   ProjectMarker,
   ProjectState,
-  TaskStatus,
+  StoredStatus,
   ValidationIssue,
   ValidationResult
 } from "./types.js";

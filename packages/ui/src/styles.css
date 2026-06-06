@@ -1,3 +1,9 @@
+/*
+ * Global page defaults for the Phase 0 viewer scaffold.
+ *
+ * These styles establish a neutral system-font baseline and a quiet background. Later UI work
+ * should replace this with the authoritative design from `design/ui-design/README.md`.
+ */
 body {
   margin: 0;
   font-family:
@@ -6,6 +12,12 @@ body {
   color: #20242c;
 }
 
+/*
+ * Temporary centered shell for the read-only viewer entrypoint.
+ *
+ * The scaffold intentionally contains no mutation controls, drag interactions, or status toggles,
+ * preserving the design rule that the browser UI is strictly read-only.
+ */
 .app-shell {
   display: grid;
   min-height: 100vh;
@@ -14,12 +26,14 @@ body {
   text-align: center;
 }
 
+/* Large title confirms the viewer package is rendering while Phase 8 UI screens are pending. */
 .app-shell h1 {
   margin: 0 0 8px;
   font-size: 32px;
   font-weight: 700;
 }
 
+/* Supporting text clarifies the scaffold is a read-only board placeholder. */
 .app-shell p {
   margin: 0;
   color: #596273;
