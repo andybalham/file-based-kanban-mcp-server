@@ -18,5 +18,14 @@ export type {
   ValidationResult
 } from "./types.js";
 
-export { createStore, parse, readMarker, scan, seedRequirements, writeMarker } from "./store.js";
-export type { Store } from "./store.js";
+export {
+  createStore,
+  discoverProjects,
+  parse,
+  readMarker,
+  scan,
+  seedRequirements,
+  serializeEntity,
+  writeMarker
+} from "./store.js";
+export type { DiscoveredProject, Store } from "./store.js";

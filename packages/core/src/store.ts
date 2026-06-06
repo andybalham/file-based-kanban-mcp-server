@@ -29,6 +29,25 @@ const PROJECT_MARKER_PATH = path.join(".worktracker", "project.json");
 const REQUIREMENTS_SOURCE_PATH = path.join(".worktracker", "requirements", "source.md");
 
 /**
+ * Directory names skipped by marker discovery.
+ *
+ * These are intentionally conservative, matching the design's standard ignores so discovery can
+ * scan folders of repositories without crawling dependency installs, git internals, or build
+ * output that may contain vendored example markers.
+ */
+const DISCOVERY_IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist"]);
+
+/**
+ * One project found by scanning configured watch roots for authoritative markers.
+ */
+export interface DiscoveredProject {
+  /** Filesystem root that owns the `.worktracker/project.json` marker. */
+  root: string;
+  /** Parsed marker content used by the server registry to rebuild project state. */
+  marker: ProjectMarker;
+}
+
+/**
  * Entity type values accepted by the persisted frontmatter schema.
  *
  * Keeping this as data, rather than scattered string comparisons, makes field validation and future
@@ -68,6 +87,14 @@ export interface Store {
   parse(filePath: string): Promise<Entity>;
 
   /**
+   * Convert an in-memory entity into the canonical Markdown file representation.
+   *
+   * This is exposed on the bound store so later write and move primitives can compare the exact
+   * bytes they would persist before touching the filesystem.
+   */
+  serialize(entity: Entity): string;
+
+  /**
    * Read the marker for this project root, returning null when the root has not been initialized.
    */
   readMarker(): Promise<ProjectMarker | null>;
@@ -96,6 +123,7 @@ export function createStore(root: string): Store {
   return {
     scan: () => scan(root),
     parse,
+    serialize: serializeEntity,
     readMarker: () => readMarker(root),
     writeMarker: (marker) => writeMarker(root, marker),
     seedRequirements: (intent) => seedRequirements(root, intent)
@@ -185,6 +213,41 @@ export async function parse(filePath: string): Promise<Entity> {
 }
 
 /**
+ * Serialize one entity using the canonical frontmatter shape from the technical design.
+ *
+ * The field order is intentionally hand-authored here instead of delegated to a generic YAML
+ * dumper. Deterministic byte output is a storage invariant: no-op updates, generated artifacts,
+ * and git diffs all rely on semantically equal entities producing exactly the same Markdown.
+ */
+export function serializeEntity(entity: Entity): string {
+  const frontmatter: string[] = [
+    `id: ${formatYamlString(entity.id)}`,
+    `type: ${entity.type}`,
+    `title: ${formatYamlString(entity.title)}`,
+    `parent: ${entity.parent === null ? "null" : formatYamlString(entity.parent)}`
+  ];
+
+  if (entity.type === "task") {
+    frontmatter.push(`status: ${entity.status}`);
+  }
+
+  frontmatter.push(`dependsOn: ${formatYamlStringArray(entity.dependsOn)}`);
+
+  if (entity.estimate !== undefined) {
+    frontmatter.push(`estimate: ${formatYamlNumber(entity.estimate)}`);
+  }
+
+  frontmatter.push(
+    `tags: ${formatYamlStringArray(entity.tags)}`,
+    `archived: ${entity.archived ? "true" : "false"}`,
+    `created: ${formatYamlString(entity.created)}`,
+    `updated: ${formatYamlString(entity.updated)}`
+  );
+
+  return `---\n${frontmatter.join("\n")}\n---\n${entity.body}`;
+}
+
+/**
  * Read a project marker from `.worktracker/project.json`.
  *
  * Absence is a normal bootstrap state, so only missing files return null. Malformed JSON or schema
@@ -253,6 +316,66 @@ export async function seedRequirements(root: string, intent: string): Promise<vo
   }
 
   await atomicWriteFile(requirementsPath, intent.endsWith("\n") ? intent : `${intent}\n`);
+}
+
+/**
+ * Discover all marked projects below a set of watch roots.
+ *
+ * Discovery treats `.worktracker/project.json` as the only source of project identity. Once a
+ * marker is found, traversal stops below that project root so a nested fixture or vendored marker
+ * cannot create a second active project from inside an already discovered project.
+ */
+export async function discoverProjects(watchRoots: string[]): Promise<DiscoveredProject[]> {
+  const discovered = new Map<string, DiscoveredProject>();
+
+  for (const watchRoot of watchRoots) {
+    const resolvedRoot = path.resolve(watchRoot);
+    await discoverProjectsUnder(resolvedRoot, discovered);
+  }
+
+  return [...discovered.values()].sort((a, b) => a.root.localeCompare(b.root));
+}
+
+/**
+ * Recursively scan one directory for project markers while preserving discovery invariants.
+ */
+async function discoverProjectsUnder(root: string, discovered: Map<string, DiscoveredProject>): Promise<void> {
+  if (shouldIgnoreDiscoveryDirectory(path.basename(root))) {
+    return;
+  }
+
+  const marker = await readMarker(root);
+  if (marker !== null) {
+    discovered.set(root, { root, marker });
+    return;
+  }
+
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return;
+    }
+
+    throw error;
+  }
+
+  const childDirectories = entries
+    .filter((entry) => entry.isDirectory() && !shouldIgnoreDiscoveryDirectory(entry.name))
+    .map((entry) => path.join(root, entry.name))
+    .sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
+
+  for (const childDirectory of childDirectories) {
+    await discoverProjectsUnder(childDirectory, discovered);
+  }
+}
+
+/**
+ * Apply the design's coarse discovery ignore rules to directory names.
+ */
+function shouldIgnoreDiscoveryDirectory(name: string): boolean {
+  return DISCOVERY_IGNORED_DIRECTORIES.has(name);
 }
 
 /**
@@ -368,6 +491,63 @@ function readOptionalNumber(filePath: string, value: unknown, key: string): numb
   }
 
   return value;
+}
+
+/**
+ * Format one YAML string scalar in the most readable deterministic form that remains unambiguous.
+ *
+ * Plain scalars keep fixture files easy for humans to edit. Values that would be ambiguous or
+ * syntactically meaningful in YAML are emitted as JSON strings, which YAML accepts and parses back
+ * to the same JavaScript string through `gray-matter`.
+ */
+function formatYamlString(value: string): string {
+  if (isSafePlainYamlScalar(value)) {
+    return value;
+  }
+
+  return JSON.stringify(value);
+}
+
+/**
+ * Format string arrays as sorted YAML flow sequences.
+ *
+ * The caller's array order is never trusted because `dependsOn` and `tags` are set-like metadata
+ * where stable lexical order prevents churn from equivalent update requests.
+ */
+function formatYamlStringArray(values: string[]): string {
+  const sorted = [...values].sort((a, b) => a.localeCompare(b));
+  return `[${sorted.map((value) => formatYamlString(value)).join(", ")}]`;
+}
+
+/**
+ * Format a finite numeric scalar without allowing `NaN` or infinities into persisted frontmatter.
+ */
+function formatYamlNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new TypeError("Entity estimate must be a finite number before serialization.");
+  }
+
+  return String(value);
+}
+
+/**
+ * Decide whether a scalar can be written without quotes while preserving the same parsed value.
+ *
+ * The guard rejects empty values, YAML keywords, leading punctuation, and characters that commonly
+ * alter YAML parsing. Timestamps are intentionally allowed because the parser already normalizes
+ * YAML Date instances back to ISO strings.
+ */
+function isSafePlainYamlScalar(value: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9 _./:-]*$/.test(value)) {
+    return false;
+  }
+
+  if (value.includes(": ")) {
+    return false;
+  }
+
+  const lower = value.toLowerCase();
+  return !["null", "true", "false", "nan", "inf", "infinity"].includes(lower);
 }
 
 /**
