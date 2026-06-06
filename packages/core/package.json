@@ -1,0 +1,13 @@
+{
+  "name": "@file-kanban/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc -b --noEmit",
+    "test": "node --test"
+  }
+}

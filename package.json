@@ -1,0 +1,28 @@
+{
+  "name": "file-based-kanban-mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/server",
+    "packages/ui"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/core packages/server && npm run build -w @file-kanban/ui",
+    "lint": "tsc -b --noEmit packages/core packages/server && npm run lint -w @file-kanban/ui",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.3.0"
+  },
+  "dependencies": {
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  }
+}
