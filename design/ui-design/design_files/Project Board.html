@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Project Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --font-sans: "Geist", system-ui, sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, monospace;
+    --accent: #7c5cff;
+    --accent-soft: color-mix(in oklab, var(--accent) 14%, transparent);
+
+    /* density */
+    --row-py: 9px;
+    --row-fs: 13.5px;
+    --id-fs: 12.5px;
+
+    /* light theme */
+    --bg: #ffffff;
+    --canvas: #f6f8fa;
+    --elevated: #ffffff;
+    --border: #d8dee4;
+    --border-soft: #eaeef2;
+    --fg: #1f2328;
+    --fg-muted: #636c76;
+    --fg-faint: #8c959f;
+    --hover: #f6f8fa;
+    --selected: var(--accent-soft);
+    --shadow: 0 1px 2px rgba(31,35,40,.06), 0 6px 24px rgba(31,35,40,.08);
+
+    /* status badge tokens (kept in sync with Mermaid classDefs) */
+    --done-fill:#c6f6d5; --done-ink:#22543d;
+    --prog-fill:#feebc8; --prog-ink:#744210;
+    --block-fill:#fed7d7; --block-ink:#742a2a;
+    --todo-fill:#e2e8f0; --todo-ink:#2d3748;
+  }
+  .dark {
+    --bg: #0d1117;
+    --canvas: #010409;
+    --elevated: #161b22;
+    --border: #30363d;
+    --border-soft: #21262d;
+    --fg: #e6edf3;
+    --fg-muted: #9198a1;
+    --fg-faint: #6e7681;
+    --hover: #161b22;
+    --shadow: 0 1px 2px rgba(1,4,9,.5), 0 8px 24px rgba(1,4,9,.6);
+  }
+  .density-compact {
+    --row-py: 5px;
+    --row-fs: 12.5px;
+    --id-fs: 11.5px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--canvas);
+    color: var(--fg);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  #root { height: 100%; }
+
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 55%, transparent); }
+    70% { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+  ::selection { background: var(--accent-soft); }
+
+  /* scrollbar */
+  .scroll::-webkit-scrollbar { width: 11px; height: 11px; }
+  .scroll::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 8px;
+    border: 3px solid var(--canvas);
+  }
+  .scroll::-webkit-scrollbar-thumb:hover { background: var(--fg-faint); }
+
+  /* ---- rendered Markdown body ---- */
+  .md { font-size: 13.5px; line-height: 1.62; color: var(--fg); }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md h1, .md h2, .md h3 { line-height: 1.3; font-weight: 600; margin: 1.5em 0 .6em; }
+  .md h1 { font-size: 17px; }
+  .md h2 { font-size: 14.5px; letter-spacing: .005em; }
+  .md h3 { font-size: 13px; color: var(--fg-muted); text-transform: none; }
+  .md p { margin: .65em 0; }
+  .md ul, .md ol { margin: .55em 0; padding-left: 1.4em; }
+  .md li { margin: .28em 0; }
+  .md a { color: var(--accent); text-decoration: none; }
+  .md a:hover { text-decoration: underline; }
+  .md code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--hover); border: 1px solid var(--border-soft);
+    border-radius: 5px; padding: .5px 5px;
+  }
+  .md pre { background: var(--hover); border: 1px solid var(--border-soft); border-radius: 8px; padding: 12px 14px; overflow: auto; }
+  .md pre code { background: none; border: none; padding: 0; }
+  .md blockquote {
+    margin: .8em 0; padding: 2px 14px; color: var(--fg-muted);
+    border-left: 3px solid var(--border);
+  }
+  .md hr { border: none; border-top: 1px solid var(--border-soft); margin: 1.2em 0; }
+  .md strong { font-weight: 600; }
+  /* read-only task-list checkboxes */
+  .md li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.5em; display: flex; align-items: baseline; gap: 1px; }
+  .md input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; cursor: default;
+    width: 15px; height: 15px; border-radius: 4px; flex: 0 0 auto;
+    border: 1.5px solid var(--fg-faint); background: transparent;
+    position: relative; margin-right: 9px; top: 3px;
+  }
+  .md input[type="checkbox"]:checked { background: var(--done-ink); border-color: var(--done-ink); }
+  .md input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 4px; top: 1px;
+    width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+
+  .dwr-ibtn:hover { background: var(--hover) !important; color: var(--fg) !important; border-color: var(--border) !important; }
+
+  .chev-btn { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 5px; color: var(--fg-muted); cursor: pointer; margin-left: -2px; flex: 0 0 auto; }
+  .chev-btn:hover { background: var(--border-soft); color: var(--fg); }
+
+  /* Drawer entrance/exit — visible is the BASE state so the panel is never
+     stuck off-screen if the animation fails to start (unpainted iframe). */
+  @keyframes drawer-in  { from { transform: translateX(100%); } to { transform: translateX(0); } }
+  @keyframes drawer-out { from { transform: translateX(0); } to { transform: translateX(100%); } }
+  @keyframes backdrop-in  { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+  @media (prefers-reduced-motion: no-preference) {
+    .dwr-panel { animation: drawer-in .26s cubic-bezier(.32,.72,0,1); }
+    .dwr-panel.closing { animation: drawer-out .2s ease forwards; }
+    .dwr-backdrop { animation: backdrop-in .22s ease; }
+    .dwr-backdrop.closing { animation: backdrop-out .2s ease forwards; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="data.js"></script>
+<script src="entities.js"></script>
+<script src="logic.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="drawer.jsx"></script>
+<script type="text/babel" src="graph.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+</body>
+</html>
