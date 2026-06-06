@@ -22,6 +22,7 @@ export {
   allocateId,
   createStore,
   discoverProjects,
+  move,
   parse,
   readMarker,
   scan,

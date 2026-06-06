@@ -9,6 +9,7 @@ import {
   allocateId,
   createStore,
   discoverProjects,
+  move,
   parse,
   readMarker,
   scan,
@@ -21,6 +22,19 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.join(__dirname, "fixtures", "minimal-project");
 const entitiesRoot = path.join(fixtureRoot, ".worktracker", "entities");
+
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
 
 test("parse reads frontmatter into the stable Entity shape and preserves Markdown body", async () => {
   const entity = await parse(path.join(entitiesRoot, "T-002-render-board.md"));
@@ -246,6 +260,76 @@ test("allocateId keeps archived ids in the initial max and zero-pads beyond thre
   });
 
   assert.equal(await allocateId(root, "task"), "T-1000");
+});
+
+test("move edits only parent frontmatter while preserving filename and Markdown body", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-move-parent-"));
+  const filePath = path.join(root, ".worktracker", "entities", "T-010-render-card.md");
+
+  await write(root, {
+    id: "T-010",
+    type: "task",
+    title: "Render card",
+    parent: "S-001",
+    status: "todo",
+    dependsOn: ["T-001"],
+    estimate: 1,
+    tags: ["ui"],
+    archived: false,
+    created: "2026-06-06T20:42:00Z",
+    updated: "2026-06-06T20:43:00Z",
+    body: "\n## Description\n\nMove should preserve this body.\n",
+    filePath
+  });
+
+  await move(root, "T-010", "S-002");
+
+  assert.equal(await pathExists(filePath), true);
+  assert.equal(await pathExists(path.join(root, ".worktracker", "entities", "T-010-S-002.md")), false);
+
+  const moved = await parse(filePath);
+  assert.equal(moved.parent, "S-002");
+  assert.equal(moved.updated, "2026-06-06T20:43:00Z");
+  assert.equal(moved.body, "\n## Description\n\nMove should preserve this body.\n");
+});
+
+test("bound store move skips byte-identical parent moves", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-move-noop-"));
+  const filePath = path.join(root, ".worktracker", "entities", "S-010-preserve-parent.md");
+  const store = createStore(root);
+
+  await store.write({
+    id: "S-010",
+    type: "story",
+    title: "Preserve parent",
+    parent: "E-001",
+    status: "todo",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-06T20:44:00Z",
+    updated: "2026-06-06T20:45:00Z",
+    body: "\nNo-op moves should not rewrite this file.\n",
+    filePath
+  });
+
+  const oldTimestamp = new Date("2026-06-01T00:00:00Z");
+  await fs.utimes(filePath, oldTimestamp, oldTimestamp);
+
+  await store.move("S-010", "E-001");
+
+  const stat = await fs.stat(filePath);
+  assert.equal(stat.mtime.getTime(), oldTimestamp.getTime());
+});
+
+test("move rejects unknown entity ids before writing", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-move-missing-"));
+  await fs.mkdir(path.join(root, ".worktracker", "entities"), { recursive: true });
+
+  await assert.rejects(() => move(root, "T-404", "S-001"), {
+    name: "EntityMoveError",
+    message: /T-404/
+  });
 });
 
 test("write rejects entity paths outside the project entity directory", async () => {

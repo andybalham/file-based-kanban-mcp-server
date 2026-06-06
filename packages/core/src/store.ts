@@ -190,6 +190,15 @@ export interface Store {
   allocateId(type: EntityType): Promise<EntityId>;
 
   /**
+   * Change one entity's parent frontmatter without relocating its Markdown file.
+   *
+   * Higher layers own hierarchy validation. The store primitive only finds the entity by
+   * authoritative id, preserves the human-authored body and filename, and suppresses no-op moves so
+   * filesystem timestamps do not churn.
+   */
+  move(id: EntityId, newParent: EntityId | null): Promise<void>;
+
+  /**
    * Read the marker for this project root, returning null when the root has not been initialized.
    */
   readMarker(): Promise<ProjectMarker | null>;
@@ -221,6 +230,7 @@ export function createStore(root: string): Store {
     serialize: serializeEntity,
     write: (entity) => write(root, entity),
     allocateId: (type) => allocateId(root, type),
+    move: (id, newParent) => move(root, id, newParent),
     readMarker: () => readMarker(root),
     writeMarker: (marker) => writeMarker(root, marker),
     seedRequirements: (intent) => seedRequirements(root, intent)
@@ -385,6 +395,28 @@ export async function allocateId(root: string, type: EntityType): Promise<Entity
   await writeCounters(root, nextCounters);
 
   return formatEntityId(type, nextNumber);
+}
+
+/**
+ * Update an entity's parent field in place.
+ *
+ * The entity is resolved from a fresh scan so callers can pass the stable frontmatter id rather than
+ * a filename. The write target remains the original `filePath`, which preserves the design rule
+ * that moves edit hierarchy metadata only and do not rename or relocate Markdown files.
+ */
+export async function move(root: string, id: EntityId, newParent: EntityId | null): Promise<void> {
+  const index = await scan(root);
+  const entity = index.byId.get(id);
+
+  if (entity === undefined) {
+    throw entityMoveError(root, `Entity '${id}' was not found.`);
+  }
+
+  if (entity.parent === newParent) {
+    return;
+  }
+
+  await write(root, { ...entity, parent: newParent });
 }
 
 /**
@@ -1107,6 +1139,15 @@ function markerParseError(filePath: string, message: string): Error {
 function counterParseError(filePath: string, message: string): Error {
   const error = new Error(`${filePath}: ${message}`);
   error.name = "CounterParseError";
+  return error;
+}
+
+/**
+ * Create a move error that identifies the project root involved in the failed move.
+ */
+function entityMoveError(root: string, message: string): Error {
+  const error = new Error(`${root}: ${message}`);
+  error.name = "EntityMoveError";
   return error;
 }
 
