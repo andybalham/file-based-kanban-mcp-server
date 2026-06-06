@@ -9,5 +9,8 @@
     "build": "tsc -b",
     "lint": "tsc -b --noEmit",
     "test": "node --test"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
   }
 }

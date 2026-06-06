@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "tsc -b packages/core packages/server && npm run build -w @file-kanban/ui",
-    "lint": "tsc -b --noEmit packages/core packages/server && npm run lint -w @file-kanban/ui",
+    "lint": "tsc -p packages/core/tsconfig.json --noEmit && tsc -p packages/server/tsconfig.json --noEmit && npm run lint -w @file-kanban/ui",
     "test": "npm run test --workspaces --if-present",
     "check:phase0": "npm run build && npm run lint && npm test"
   },

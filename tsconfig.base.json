@@ -8,6 +8,9 @@
     "declarationMap": true,
     "sourceMap": true,
     "esModuleInterop": true,
+    "types": [
+      "node"
+    ],
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "skipLibCheck": true
