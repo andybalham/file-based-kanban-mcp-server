@@ -16,6 +16,46 @@ export type {
 } from "./registry.js";
 export { createProjectRegistry, RegistryError } from "./registry.js";
 
+export {
+  MCP_ERROR_CODES,
+  MCP_RESOURCE_TEMPLATES,
+  MCP_TOOL_DEFINITIONS,
+  MCP_TOOL_NAMES,
+  McpAdapterError,
+  isMcpErrorCode,
+  toMcpStructuredError,
+  validationIssueCodeToMcpErrorCode,
+  validationIssueToMcpError
+} from "./mcp.js";
+export type {
+  ArchiveEntityToolArgs,
+  CreateEntityToolArgs,
+  CriticalPathToolArgs,
+  CriticalPathToolResult,
+  DependencyToolArgs,
+  DependencyToolResult,
+  EntityIdToolResult,
+  InitToolArgs,
+  InitToolResult,
+  ListProjectsToolResult,
+  McpErrorCode,
+  McpResourceKey,
+  McpStructuredError,
+  McpToolArgsByName,
+  McpToolDefinition,
+  McpToolName,
+  McpToolResultByName,
+  MoveEntityToolArgs,
+  ProjectScopedToolArgs,
+  QueryBlockedToolResult,
+  QueryBlockedToolRow,
+  QueryReadyToolResult,
+  SetStatusToolArgs,
+  SetStatusToolResult,
+  UpdateEntityFields,
+  UpdateEntityToolArgs
+} from "./mcp.js";
+
 /**
  * Create the process-wide project registry and immediately populate it from configured watch roots.
  *
