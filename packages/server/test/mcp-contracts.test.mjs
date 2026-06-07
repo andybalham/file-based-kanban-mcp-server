@@ -332,6 +332,184 @@ test("executeMcpMutationTool updates fields, task status, parent, and archived f
   assert.equal(state.index.byId.get("T-001").archived, true);
 });
 
+test("executeMcpMutationTool links and unlinks dependencies for every entity type", async () => {
+  const root = await makeTempRoot("file-kanban-mcp-dependencies-");
+  const state = mutationProjectState(root);
+  await seedEntityFiles(root, state);
+  const registry = resourceRegistry([state]);
+
+  await executeMcpMutationTool(registry, "create_entity", { projectId: "wt_mutation", type: "epic", title: "Second epic" }, { now: fixedNow });
+  await executeMcpMutationTool(
+    registry,
+    "create_entity",
+    { projectId: "wt_mutation", type: "story", title: "Second story", parent: "E-001" },
+    { now: fixedNow }
+  );
+  await executeMcpMutationTool(
+    registry,
+    "create_entity",
+    { projectId: "wt_mutation", type: "task", title: "Second task", parent: "S-001" },
+    { now: fixedNow }
+  );
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "link_dependency",
+      { projectId: "wt_mutation", from: "E-002", to: "E-001" },
+      { now: fixedNow }
+    ),
+    { from: "E-002", to: "E-001" }
+  );
+  assert.deepEqual(state.index.byId.get("E-002").dependsOn, ["E-001"]);
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "link_dependency",
+      { projectId: "wt_mutation", from: "S-002", to: "S-001" },
+      { now: fixedNow }
+    ),
+    { from: "S-002", to: "S-001" }
+  );
+  assert.deepEqual(state.index.byId.get("S-002").dependsOn, ["S-001"]);
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "link_dependency",
+      { projectId: "wt_mutation", from: "T-002", to: "T-001" },
+      { now: fixedNow }
+    ),
+    { from: "T-002", to: "T-001" }
+  );
+  assert.deepEqual(state.index.byId.get("T-002").dependsOn, ["T-001"]);
+  assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "T-002-second-task.md"), "utf8"), /dependsOn: \[T-001\]/);
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "unlink_dependency",
+      { projectId: "wt_mutation", from: "T-002", to: "T-001" },
+      { now: fixedNow }
+    ),
+    { from: "T-002", to: "T-001" }
+  );
+  assert.deepEqual(state.index.byId.get("T-002").dependsOn, []);
+  assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "T-002-second-task.md"), "utf8"), /dependsOn: \[\]/);
+});
+
+test("executeMcpMutationTool rejects invalid dependency edits before touching the store", async () => {
+  const root = await makeTempRoot("file-kanban-mcp-dependency-rejects-");
+  const state = mutationProjectState(root);
+  await seedEntityFiles(root, state);
+  const registry = resourceRegistry([state]);
+
+  await executeMcpMutationTool(
+    registry,
+    "create_entity",
+    { projectId: "wt_mutation", type: "task", title: "Second task", parent: "S-001" },
+    { now: fixedNow }
+  );
+
+  const taskPath = path.join(root, ".worktracker", "entities", "T-002-second-task.md");
+  await executeMcpMutationTool(
+    registry,
+    "link_dependency",
+    { projectId: "wt_mutation", from: "T-002", to: "T-001" },
+    { now: fixedNow }
+  );
+  const before = await fs.readFile(taskPath, "utf8");
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "link_dependency",
+        { projectId: "wt_mutation", from: "T-002", to: "S-001" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "DEP_TYPE_MISMATCH",
+        message: "task dependency 'S-001' must also be a task.",
+        details: { from: "T-002", to: "S-001", fromType: "task", toType: "story" }
+      });
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "link_dependency",
+        { projectId: "wt_mutation", from: "T-002", to: "T-002" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "SELF_DEPENDENCY",
+        message: "Entity 'T-002' cannot depend on itself.",
+        details: { id: "T-002" }
+      });
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "link_dependency",
+        { projectId: "wt_mutation", from: "T-002", to: "T-001" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "DUPLICATE_DEPENDENCY",
+        message: "Entity 'T-002' already depends on 'T-001'.",
+        details: { from: "T-002", to: "T-001" }
+      });
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "unlink_dependency",
+        { projectId: "wt_mutation", from: "T-001", to: "T-002" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "NOT_LINKED",
+        message: "Entity 'T-001' does not depend on 'T-002'.",
+        details: { from: "T-001", to: "T-002" }
+      });
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "link_dependency",
+        { projectId: "wt_mutation", from: "T-001", to: "T-002" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.equal(toMcpStructuredError(error).code, "DEP_CYCLE");
+      return true;
+    }
+  );
+
+  assert.equal(await fs.readFile(taskPath, "utf8"), before);
+});
+
 test("executeMcpMutationTool rejects invalid proposals before touching the store", async () => {
   const root = await makeTempRoot("file-kanban-mcp-rejects-");
   const state = mutationProjectState(root);

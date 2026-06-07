@@ -580,13 +580,15 @@ export type McpQueryToolName = "query_ready" | "query_blocked" | "critical_path"
 /**
  * Entity-mutating MCP tool names implemented by this phase.
  *
- * Dependency link tools are intentionally left for the dedicated dependency-tool task so this write
- * path stays scoped to create/update/status/move/archive behavior.
+ * Dependency link tools live in the same validate-before-commit write path because they mutate one
+ * entity's `dependsOn` frontmatter and must trigger the same regeneration side effects.
  */
 export type McpEntityMutationToolName =
   | "create_entity"
   | "update_entity"
   | "set_status"
+  | "link_dependency"
+  | "unlink_dependency"
   | "move_entity"
   | "archive_entity";
 
@@ -646,6 +648,10 @@ export async function executeMcpMutationTool<Name extends McpEntityMutationToolN
       return executeUpdateEntity(registry, args as UpdateEntityToolArgs, options) as Promise<McpToolResultByName[Name]>;
     case "set_status":
       return executeSetStatus(registry, args as SetStatusToolArgs, options) as Promise<McpToolResultByName[Name]>;
+    case "link_dependency":
+      return executeLinkDependency(registry, args as DependencyToolArgs, options) as Promise<McpToolResultByName[Name]>;
+    case "unlink_dependency":
+      return executeUnlinkDependency(registry, args as DependencyToolArgs, options) as Promise<McpToolResultByName[Name]>;
     case "move_entity":
       return executeMoveEntity(registry, args as MoveEntityToolArgs, options) as Promise<McpToolResultByName[Name]>;
     case "archive_entity":
@@ -953,6 +959,64 @@ async function executeSetStatus(
 }
 
 /**
+ * Add one same-type dependency edge to the `from` entity after contract-level edge checks and full
+ * graph validation. The persisted model stores dependencies as frontmatter on the dependent entity,
+ * so this mutation writes exactly one entity file when the edge is accepted.
+ */
+async function executeLinkDependency(
+  registry: McpMutationToolRegistry,
+  args: DependencyToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<DependencyToolResult> {
+  const project = resolveMutationProject(registry, args);
+  const from = requiredToolEntity(project, args.from);
+  const to = requiredToolEntity(project, args.to);
+
+  assertSameTypeDependency(from, to);
+  assertNewDependencyEdge(from, to);
+
+  const next = withUpdatedTimestampIfChanged(from, {
+    ...from,
+    dependsOn: sortedUniqueStrings([...from.dependsOn, to.id])
+  }, options);
+
+  assertValidProposal(proposedIndex(project.index, next));
+  await write(project.root, next);
+  await regenerateMutationProject(project, options);
+
+  return { from: from.id, to: to.id };
+}
+
+/**
+ * Remove one existing same-type dependency edge from the `from` entity. Missing edges are reported
+ * before proposal validation so callers receive the public `NOT_LINKED` error instead of a no-op
+ * write or a generic validation result.
+ */
+async function executeUnlinkDependency(
+  registry: McpMutationToolRegistry,
+  args: DependencyToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<DependencyToolResult> {
+  const project = resolveMutationProject(registry, args);
+  const from = requiredToolEntity(project, args.from);
+  const to = requiredToolEntity(project, args.to);
+
+  assertSameTypeDependency(from, to);
+  assertExistingDependencyEdge(from, to);
+
+  const next = withUpdatedTimestampIfChanged(from, {
+    ...from,
+    dependsOn: from.dependsOn.filter((dependencyId) => dependencyId !== to.id)
+  }, options);
+
+  assertValidProposal(proposedIndex(project.index, next));
+  await write(project.root, next);
+  await regenerateMutationProject(project, options);
+
+  return { from: from.id, to: to.id };
+}
+
+/**
  * Change one entity parent after validating hierarchy invariants.
  */
 async function executeMoveEntity(
@@ -1007,6 +1071,49 @@ function requiredToolEntity(project: ProjectState, id: EntityId): Entity {
   }
 
   return entity;
+}
+
+/**
+ * Enforce the MCP dependency contract that `from` and `to` must be different entities of the same
+ * layer before core validation sees the proposed graph. This keeps error codes precise for agents.
+ */
+function assertSameTypeDependency(from: Entity, to: Entity): void {
+  if (from.id === to.id) {
+    throw new McpAdapterError("SELF_DEPENDENCY", `Entity '${from.id}' cannot depend on itself.`, { id: from.id });
+  }
+
+  if (from.type !== to.type) {
+    throw new McpAdapterError(
+      "DEP_TYPE_MISMATCH",
+      `${from.type} dependency '${to.id}' must also be a ${from.type}.`,
+      { from: from.id, to: to.id, fromType: from.type, toType: to.type }
+    );
+  }
+}
+
+/**
+ * Reject duplicate links before writing. `dependsOn` is treated as set-like frontmatter, so accepting
+ * duplicates would either create semantic churn or be erased by canonical serialization later.
+ */
+function assertNewDependencyEdge(from: Entity, to: Entity): void {
+  if (from.dependsOn.includes(to.id)) {
+    throw new McpAdapterError("DUPLICATE_DEPENDENCY", `Entity '${from.id}' already depends on '${to.id}'.`, {
+      from: from.id,
+      to: to.id
+    });
+  }
+}
+
+/**
+ * Reject unlink requests for absent edges with the public `NOT_LINKED` code promised by §9.4.
+ */
+function assertExistingDependencyEdge(from: Entity, to: Entity): void {
+  if (!from.dependsOn.includes(to.id)) {
+    throw new McpAdapterError("NOT_LINKED", `Entity '${from.id}' does not depend on '${to.id}'.`, {
+      from: from.id,
+      to: to.id
+    });
+  }
 }
 
 /**
@@ -1099,6 +1206,13 @@ function entitySemanticKey(entity: Entity): string {
     archived: entity.archived,
     body: entity.body
   });
+}
+
+/**
+ * Return deterministic set-like string arrays for persisted frontmatter fields.
+ */
+function sortedUniqueStrings(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 /**
