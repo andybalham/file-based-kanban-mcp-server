@@ -49,6 +49,18 @@ Size tasks so one agent can complete and verify the work in one focused session.
 
 Split a task when it spans multiple packages, introduces multiple public interfaces, requires unrelated test strategies, or would force the implementer to make product decisions not already settled by the design document.
 
+## Test and Artifact Naming
+
+Use phase numbers in kanban task titles and labels, not in test names or implementation artifact names.
+
+Name tests, snapshots, fixtures, generated proof files, and other code-level artifacts after the behavior, invariant, or public contract they verify. Avoid names such as `phase 4 acceptance` when a behavior-focused name is available.
+
+Examples:
+
+- Prefer `init-created projects rebuild identically from their portable marker`.
+- Prefer `generated board index is byte-identical after a no-op regeneration`.
+- Avoid `phase N acceptance`, `phase N integration`, or `phase N proof` in test titles, fixture names, snapshot names, and generated artifact filenames unless the artifact is explicitly part of the planning board itself.
+
 ## Task Lifecycle
 
 For implementation work:

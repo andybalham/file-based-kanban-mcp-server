@@ -303,3 +303,34 @@ test("a fresh registry rebuilds identical project summaries from discovered mark
 
   assert.deepEqual(secondRegistry.listProjects(), firstRegistry.listProjects());
 });
+
+test("init-created projects rebuild identically from their portable marker", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-acceptance-");
+  const projectRoot = path.join(watchRoot, "repo");
+  const initRegistry = createProjectRegistry({
+    watchRoots: [watchRoot],
+    createProjectId: () => "wt_phase4_acceptance",
+    now: () => new Date("2026-06-07T12:30:00Z")
+  });
+
+  await fs.mkdir(projectRoot, { recursive: true });
+
+  assert.deepEqual(await initRegistry.init({ root: projectRoot, title: "Phase 4 Acceptance" }), {
+    projectId: "wt_phase4_acceptance"
+  });
+
+  const initSummary = initRegistry.listProjects();
+  const rebuiltRegistry = await bootstrapProjectRegistry({
+    watchRoots: [watchRoot]
+  });
+
+  assert.deepEqual(rebuiltRegistry.listProjects(), initSummary);
+  assert.equal(rebuiltRegistry.resolveProject("wt_phase4_acceptance").marker.title, "Phase 4 Acceptance");
+  assert.throws(
+    () => rebuiltRegistry.resolveProject("wt_missing"),
+    (error) =>
+      error instanceof RegistryError &&
+      error.code === "PROJECT_NOT_FOUND" &&
+      error.projectId === "wt_missing"
+  );
+});
