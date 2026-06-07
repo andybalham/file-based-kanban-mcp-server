@@ -1,4 +1,17 @@
+import { randomBytes } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
+import { readMarker, resolveAll, scan, seedRequirements, writeMarker } from "@file-kanban/core";
 import type { ProjectId, ProjectMarker, ProjectState } from "@file-kanban/core";
+
+/**
+ * Root-relative directory containing entity Markdown files.
+ *
+ * Init creates this directory before the first scan so a newly bootstrapped project can register as
+ * an empty project without waiting for the first entity creation.
+ */
+const ENTITIES_DIR = path.join(".worktracker", "entities");
 
 /**
  * Structured registry error codes promised by the project resolution design.
@@ -69,6 +82,12 @@ export interface ProjectRegistryOptions {
 export interface CreateProjectRegistryOptions extends ProjectRegistryOptions {
   /** Optional project states already built by discovery or tests and ready for immediate lookup. */
   initialProjects?: ProjectState[];
+  /** Optional state builder used by init/discovery tests or future watcher orchestration. */
+  buildProjectState?: ProjectStateBuilder;
+  /** Optional id factory for deterministic init tests. */
+  createProjectId?: ProjectIdFactory;
+  /** Optional clock for deterministic marker creation tests. */
+  now?: Clock;
 }
 
 /**
@@ -79,6 +98,22 @@ export interface CreateProjectRegistryOptions extends ProjectRegistryOptions {
  * concrete filesystem orchestration.
  */
 export type ProjectStateBuilder = (root: string, marker: ProjectMarker) => Promise<ProjectState>;
+
+/**
+ * Function used by init to mint portable project ids.
+ *
+ * Tests can inject this dependency so idempotency and marker serialization are deterministic while
+ * production keeps using random ids that match the design's `wt_<hex>` shape.
+ */
+export type ProjectIdFactory = () => ProjectId;
+
+/**
+ * Function used by init to timestamp a newly created marker.
+ *
+ * The timestamp is injected for tests because init must not rewrite existing markers merely because
+ * time has advanced.
+ */
+export type Clock = () => Date;
 
 /**
  * Server-owned in-memory registry for all discovered projects.
@@ -152,11 +187,10 @@ export function createProjectRegistry(options: CreateProjectRegistryOptions): Pr
 }
 
 /**
- * Minimal Phase 4 registry implementation for project resolution and listing.
+ * Phase 4 registry implementation for project resolution, listing, and init bootstrap.
  *
- * Filesystem-backed `init`, marker discovery, and boot scanning are intentionally left as guarded
- * extension points for their specific tasks. The resolution behavior here is complete and shared by
- * those future paths once they populate `projectsByRoot`.
+ * Marker discovery and boot scanning remain separate tasks, but `init` now performs the full
+ * create-if-absent flow and registers the resulting state synchronously within the call.
  */
 class InMemoryProjectRegistry implements ProjectRegistry {
   /**
@@ -170,13 +204,31 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   private readonly watchRoots: string[];
 
   /**
+   * Project state builder used after marker creation or existing-marker lookup.
+   */
+  private readonly buildProjectState: ProjectStateBuilder;
+
+  /**
+   * Id factory used only when init creates a new marker.
+   */
+  private readonly createProjectId: ProjectIdFactory;
+
+  /**
+   * Clock used only when init creates a new marker.
+   */
+  private readonly now: Clock;
+
+  /**
    * Seed the registry with already-built project states.
    */
   constructor(options: CreateProjectRegistryOptions) {
     this.watchRoots = [...options.watchRoots];
+    this.buildProjectState = options.buildProjectState ?? buildProjectStateFromCore;
+    this.createProjectId = options.createProjectId ?? createRandomProjectId;
+    this.now = options.now ?? (() => new Date());
 
     for (const project of options.initialProjects ?? []) {
-      this.projectsByRoot.set(project.root, project);
+      this.projectsByRoot.set(path.resolve(project.root), { ...project, root: path.resolve(project.root) });
     }
   }
 
@@ -220,10 +272,36 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   }
 
   /**
-   * Placeholder for the queued init bootstrap task.
+   * Bootstrap a project root and register it before returning the project id.
+   *
+   * Existing markers are treated as authoritative: init returns their id, performs no marker or
+   * requirements writes, and still refreshes in-memory state so callers can immediately resolve the
+   * project through this registry.
    */
-  async init(_args: InitProjectArgs): Promise<InitProjectResult> {
-    throw new Error("Project registry init is not implemented yet.");
+  async init(args: InitProjectArgs): Promise<InitProjectResult> {
+    const root = path.resolve(args.root);
+    const existingMarker = await readMarker(root);
+
+    if (existingMarker !== null) {
+      await this.registerInitializedRoot(root, existingMarker);
+      return { projectId: existingMarker.projectId };
+    }
+
+    const marker: ProjectMarker = {
+      projectId: this.createProjectId(),
+      title: args.title,
+      created: this.now().toISOString().replace(".000Z", "Z")
+    };
+
+    await writeMarker(root, marker);
+    await this.ensureEntityDirectory(root);
+
+    if (args.intent !== undefined) {
+      await seedRequirements(root, args.intent);
+    }
+
+    await this.registerInitializedRoot(root, marker);
+    return { projectId: marker.projectId };
   }
 
   /**
@@ -248,4 +326,43 @@ class InMemoryProjectRegistry implements ProjectRegistry {
       (left, right) => left.projectId.localeCompare(right.projectId) || left.root.localeCompare(right.root)
     );
   }
+
+  /**
+   * Build and cache runtime state for an initialized root.
+   */
+  private async registerInitializedRoot(root: string, marker: ProjectMarker): Promise<ProjectState> {
+    const state = await this.buildProjectState(root, marker);
+    const registeredState = { ...state, root };
+    this.projectsByRoot.set(root, registeredState);
+    return registeredState;
+  }
+
+  /**
+   * Ensure the empty entity directory exists before scanning a freshly initialized project.
+   */
+  private async ensureEntityDirectory(root: string): Promise<void> {
+    await fs.mkdir(path.join(root, ENTITIES_DIR), { recursive: true });
+  }
+}
+
+/**
+ * Build one runtime project state using the core scan and status resolver.
+ */
+async function buildProjectStateFromCore(root: string, marker: ProjectMarker): Promise<ProjectState> {
+  const index = await scan(root);
+
+  return {
+    projectId: marker.projectId,
+    root,
+    marker,
+    index,
+    eff: resolveAll(index)
+  };
+}
+
+/**
+ * Mint a portable project id with the `wt_<hex>` shape shown in the technical design.
+ */
+function createRandomProjectId(): ProjectId {
+  return `wt_${randomBytes(4).toString("hex")}`;
 }

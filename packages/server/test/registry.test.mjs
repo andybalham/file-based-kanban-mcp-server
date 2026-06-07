@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { createProjectRegistry, RegistryError } from "../dist/main.js";
 
@@ -22,6 +25,27 @@ function makeProject(root, projectId, title) {
   };
 }
 
+async function makeTempRoot(prefix) {
+  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+async function readText(filePath) {
+  return fs.readFile(filePath, "utf8");
+}
+
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
 test("listProjects returns deterministic public project summaries", () => {
   const registry = createProjectRegistry({
     watchRoots: [],
@@ -35,12 +59,12 @@ test("listProjects returns deterministic public project summaries", () => {
     {
       projectId: "wt_001",
       title: "First",
-      root: "C:/repos/a"
+      root: path.resolve("C:/repos/a")
     },
     {
       projectId: "wt_002",
       title: "Second",
-      root: "C:/repos/b"
+      root: path.resolve("C:/repos/b")
     }
   ]);
 });
@@ -53,7 +77,7 @@ test("resolveProject returns an explicit project from a multi-project registry",
     initialProjects: [first, second]
   });
 
-  assert.equal(registry.resolveProject("wt_002"), second);
+  assert.deepEqual(registry.resolveProject("wt_002"), { ...second, root: path.resolve(second.root) });
 });
 
 test("resolveProject returns the only project when project id is omitted", () => {
@@ -63,7 +87,7 @@ test("resolveProject returns the only project when project id is omitted", () =>
     initialProjects: [project]
   });
 
-  assert.equal(registry.resolveProject(), project);
+  assert.deepEqual(registry.resolveProject(), { ...project, root: path.resolve(project.root) });
 });
 
 test("resolveProject raises AMBIGUOUS_PROJECT when id is omitted with multiple projects", () => {
@@ -105,4 +129,63 @@ test("resolveProject raises PROJECT_NOT_FOUND when no projects are registered", 
     () => registry.resolveProject(),
     (error) => error instanceof RegistryError && error.code === "PROJECT_NOT_FOUND"
   );
+});
+
+test("init creates a marker, seeds requirements once, scans, and registers synchronously", async () => {
+  const root = await makeTempRoot("file-kanban-registry-init-");
+  const registry = createProjectRegistry({
+    watchRoots: [],
+    createProjectId: () => "wt_test_init",
+    now: () => new Date("2026-06-07T12:00:00Z")
+  });
+
+  assert.deepEqual(await registry.init({ root, title: "Init Project", intent: "Initial requirements" }), {
+    projectId: "wt_test_init"
+  });
+
+  assert.equal(
+    await readText(path.join(root, ".worktracker", "project.json")),
+    '{\n  "projectId": "wt_test_init",\n  "title": "Init Project",\n  "created": "2026-06-07T12:00:00Z"\n}\n'
+  );
+  assert.equal(await readText(path.join(root, ".worktracker", "requirements", "source.md")), "Initial requirements\n");
+  assert.equal(await pathExists(path.join(root, ".worktracker", "entities")), true);
+
+  const state = registry.resolveProject("wt_test_init");
+  assert.equal(state.root, path.resolve(root));
+  assert.equal(state.marker.title, "Init Project");
+  assert.equal(state.index.byId.size, 0);
+  assert.equal(state.eff.size, 0);
+});
+
+test("init on an already marked root returns the existing id and does not reseed requirements", async () => {
+  const root = await makeTempRoot("file-kanban-registry-init-existing-");
+  const markerPath = path.join(root, ".worktracker", "project.json");
+  const requirementsPath = path.join(root, ".worktracker", "requirements", "source.md");
+
+  await fs.mkdir(path.join(root, ".worktracker", "entities"), { recursive: true });
+  await fs.mkdir(path.dirname(markerPath), { recursive: true });
+  await fs.mkdir(path.dirname(requirementsPath), { recursive: true });
+  await fs.writeFile(
+    markerPath,
+    '{\n  "projectId": "wt_existing",\n  "title": "Existing Project",\n  "created": "2026-06-07T11:00:00Z"\n}\n',
+    "utf8"
+  );
+  await fs.writeFile(requirementsPath, "Human-authored requirements", "utf8");
+
+  const registry = createProjectRegistry({
+    watchRoots: [],
+    createProjectId: () => "wt_should_not_be_used",
+    now: () => new Date("2026-06-07T12:00:00Z")
+  });
+
+  assert.deepEqual(await registry.init({ root, title: "Ignored Title", intent: "Ignored requirements" }), {
+    projectId: "wt_existing"
+  });
+
+  assert.equal(
+    await readText(markerPath),
+    '{\n  "projectId": "wt_existing",\n  "title": "Existing Project",\n  "created": "2026-06-07T11:00:00Z"\n}\n'
+  );
+  assert.equal(await readText(requirementsPath), "Human-authored requirements");
+  assert.equal(registry.resolveProject("wt_existing").marker.title, "Existing Project");
 });

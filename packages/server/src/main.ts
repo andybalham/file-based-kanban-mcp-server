@@ -4,8 +4,10 @@ export type {
   InitProjectArgs,
   InitProjectResult,
   CreateProjectRegistryOptions,
+  Clock,
   ProjectRegistry,
   ProjectRegistryOptions,
+  ProjectIdFactory,
   ProjectStateBuilder,
   RegisteredProject,
   RegistryErrorCode
