@@ -56,6 +56,9 @@ export type {
   UpdateEntityToolArgs
 } from "./mcp.js";
 
+export { regenerateProject } from "./regenerate.js";
+export type { RegenerateProjectOptions, RegenerationResult, WriteSuppressionSet } from "./regenerate.js";
+
 /**
  * Create the process-wide project registry and immediately populate it from configured watch roots.
  *
