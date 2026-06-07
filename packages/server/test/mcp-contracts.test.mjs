@@ -12,6 +12,7 @@ import {
   MCP_TOOL_NAMES,
   McpAdapterError,
   RegistryError,
+  executeMcpQueryTool,
   isMcpErrorCode,
   readMcpResource,
   toMcpStructuredError,
@@ -162,6 +163,84 @@ test("MCP tool definitions expose every design tool in deterministic order", () 
   assert.deepEqual(MCP_TOOL_DEFINITIONS.set_status.resultFields, ["id", "effectiveStatus"]);
 });
 
+test("executeMcpQueryTool returns registered projects and validation results", () => {
+  const root = path.join(os.tmpdir(), "file-kanban-query-list");
+  const registry = resourceRegistry([queryProjectState(root)]);
+
+  assert.deepEqual(executeMcpQueryTool(registry, "list_projects", {}), {
+    projects: [
+      {
+        projectId: "wt_query",
+        title: "Query Project",
+        root
+      }
+    ]
+  });
+
+  assert.deepEqual(executeMcpQueryTool(registry, "validate", { projectId: "wt_query" }), {
+    errors: [],
+    warnings: []
+  });
+});
+
+test("executeMcpQueryTool returns ready tasks and blocked entities with blockers", () => {
+  const registry = resourceRegistry([queryProjectState(path.join(os.tmpdir(), "file-kanban-query-status"))]);
+
+  assert.deepEqual(executeMcpQueryTool(registry, "query_ready", { projectId: "wt_query" }), {
+    tasks: ["T-001"]
+  });
+
+  assert.deepEqual(executeMcpQueryTool(registry, "query_blocked", { projectId: "wt_query" }), {
+    blocked: [
+      { id: "E-001", type: "epic", blockedBy: [] },
+      { id: "S-001", type: "story", blockedBy: [] },
+      { id: "S-002", type: "story", blockedBy: ["S-001"] },
+      { id: "T-003", type: "task", blockedBy: ["T-001"] },
+      { id: "T-005", type: "task", blockedBy: ["S-002"] }
+    ]
+  });
+});
+
+test("executeMcpQueryTool returns deterministic critical path by selected type", () => {
+  const registry = resourceRegistry([queryProjectState(path.join(os.tmpdir(), "file-kanban-query-path"))]);
+
+  assert.deepEqual(executeMcpQueryTool(registry, "critical_path", { projectId: "wt_query" }), {
+    path: ["T-002", "T-001", "T-003"],
+    total: 6
+  });
+
+  assert.deepEqual(executeMcpQueryTool(registry, "critical_path", { projectId: "wt_query", type: "story" }), {
+    path: ["S-001", "S-002"],
+    total: 2
+  });
+});
+
+test("executeMcpQueryTool uses registry project resolution errors", () => {
+  const registry = resourceRegistry([
+    queryProjectState(path.join(os.tmpdir(), "file-kanban-query-one")),
+    {
+      ...queryProjectState(path.join(os.tmpdir(), "file-kanban-query-two")),
+      projectId: "wt_second",
+      marker: {
+        projectId: "wt_second",
+        title: "Second Project",
+        created: "2026-06-07T00:00:00Z"
+      }
+    }
+  ]);
+
+  assert.throws(
+    () => executeMcpQueryTool(registry, "query_ready", {}),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "AMBIGUOUS_PROJECT",
+        message: "Multiple projects are registered; provide projectId to choose one."
+      });
+      return true;
+    }
+  );
+});
+
 test("MCP error code registry includes every structured design error", () => {
   assert.deepEqual(MCP_ERROR_CODES, [
     "NOT_FOUND",
@@ -228,6 +307,21 @@ function resourceRegistry(states) {
         .sort((left, right) => left.projectId.localeCompare(right.projectId) || left.root.localeCompare(right.root));
     },
     resolveProject(projectId) {
+      if (projectId === undefined) {
+        if (states.length === 1) {
+          return states[0];
+        }
+
+        if (states.length === 0) {
+          throw new RegistryError("PROJECT_NOT_FOUND", "No projects are registered.");
+        }
+
+        throw new RegistryError(
+          "AMBIGUOUS_PROJECT",
+          "Multiple projects are registered; provide projectId to choose one."
+        );
+      }
+
       const state = states.find((candidate) => candidate.projectId === projectId);
       if (state === undefined) {
         throw new RegistryError("PROJECT_NOT_FOUND", `Project '${projectId}' is not registered.`, { projectId });
@@ -275,6 +369,70 @@ function projectState(root) {
       [story.id, "todo"],
       [task.id, "todo"]
     ])
+  };
+}
+
+function queryProjectState(root) {
+  const epic = entity({ id: "E-001", type: "epic", title: "Epic", parent: null });
+  const story = entity({ id: "S-001", type: "story", title: "Story", parent: "E-001" });
+  const gatedStory = entity({
+    id: "S-002",
+    type: "story",
+    title: "Gated story",
+    parent: "E-001",
+    dependsOn: ["S-001"]
+  });
+  const readyTask = entity({
+    id: "T-001",
+    title: "Ready task",
+    parent: "S-001",
+    dependsOn: ["T-002"],
+    estimate: 2
+  });
+  const completedPrerequisite = entity({
+    id: "T-002",
+    title: "Completed prerequisite",
+    parent: "S-001",
+    status: "done",
+    estimate: 3
+  });
+  const blockedTask = entity({
+    id: "T-003",
+    title: "Blocked task",
+    parent: "S-001",
+    dependsOn: ["T-001"],
+    estimate: 1
+  });
+  const activeTask = entity({
+    id: "T-004",
+    title: "Active task",
+    parent: "S-001",
+    status: "in-progress"
+  });
+  const propagatedTask = entity({
+    id: "T-005",
+    title: "Propagated task",
+    parent: "S-002"
+  });
+  const entities = [epic, story, gatedStory, readyTask, completedPrerequisite, blockedTask, activeTask, propagatedTask];
+
+  return {
+    projectId: "wt_query",
+    root,
+    marker: {
+      projectId: "wt_query",
+      title: "Query Project",
+      created: "2026-06-07T00:00:00Z"
+    },
+    index: {
+      byId: new Map(entities.map((current) => [current.id, current])),
+      childrenOf: new Map([
+        [epic.id, [story.id, gatedStory.id]],
+        [story.id, [readyTask.id, completedPrerequisite.id, blockedTask.id, activeTask.id]],
+        [gatedStory.id, [propagatedTask.id]]
+      ])
+    },
+    eff: new Map()
   };
 }
 

@@ -12,6 +12,7 @@ import type {
   ValidationIssue,
   ValidationResult
 } from "@file-kanban/core";
+import { blocked, criticalPath, ready, resolveDetailed, validate } from "@file-kanban/core";
 
 import { RegistryError } from "./registry.js";
 import type { RegisteredProject } from "./registry.js";
@@ -347,6 +348,15 @@ export interface McpResourceRegistry {
 }
 
 /**
+ * Minimal registry surface needed by non-mutating MCP query tools.
+ *
+ * It intentionally matches the read-only resource registry today. Keeping a separate name makes
+ * the tool boundary explicit and leaves room for later mutating tools to require a richer writer
+ * interface without widening the query contract.
+ */
+export interface McpQueryToolRegistry extends McpResourceRegistry {}
+
+/**
  * Read one MCP resource without depending on MCP SDK transport classes.
  *
  * Project resources are deliberately side-effect free. They read the current in-memory state or the
@@ -551,6 +561,40 @@ export const MCP_TOOL_DEFINITIONS: { [Name in McpToolName]: McpToolDefinition<Na
 };
 
 /**
+ * Query-only MCP tool names implemented before the mutation write path.
+ *
+ * Phase 5 wires these first because they can delegate entirely to validated core graph/status
+ * functions and the registry's project-resolution rules without touching storage.
+ */
+export type McpQueryToolName = "query_ready" | "query_blocked" | "critical_path" | "validate" | "list_projects";
+
+/**
+ * Execute one non-mutating MCP tool against the supplied registry.
+ *
+ * The concrete stdio adapter can call this from its SDK handler and then serialize the returned
+ * object directly. Mutation tools are deliberately rejected here so later write-path work cannot
+ * accidentally skip validate-before-commit or regeneration.
+ */
+export function executeMcpQueryTool<Name extends McpQueryToolName>(
+  registry: McpQueryToolRegistry,
+  name: Name,
+  args: McpToolArgsByName[Name]
+): McpToolResultByName[Name] {
+  switch (name) {
+    case "query_ready":
+      return executeQueryReady(registry, args as ProjectScopedToolArgs) as McpToolResultByName[Name];
+    case "query_blocked":
+      return executeQueryBlocked(registry, args as ProjectScopedToolArgs) as McpToolResultByName[Name];
+    case "critical_path":
+      return executeCriticalPath(registry, args as CriticalPathToolArgs) as McpToolResultByName[Name];
+    case "validate":
+      return executeValidate(registry, args as ProjectScopedToolArgs) as McpToolResultByName[Name];
+    case "list_projects":
+      return executeListProjects(registry) as McpToolResultByName[Name];
+  }
+}
+
+/**
  * Structured error payload returned by MCP tools when a call fails.
  */
 export interface McpStructuredError {
@@ -602,6 +646,10 @@ export function toMcpStructuredError(error: unknown): McpStructuredError {
 
   if (isNamedCoreLookupError(error)) {
     return { code: "NOT_FOUND", message: error.message };
+  }
+
+  if (isGraphCycleError(error)) {
+    return { code: "DEP_CYCLE", message: error.message };
   }
 
   throw error;
@@ -713,6 +761,55 @@ function serializeResourceEntity(entity: Entity): Record<string, unknown> {
 }
 
 /**
+ * Resolve a project for query tools using the same §9.0 rules as resources.
+ */
+function resolveToolProject(registry: McpQueryToolRegistry, args: ProjectScopedToolArgs): ProjectState {
+  return registry.resolveProject(args.projectId);
+}
+
+/**
+ * Return effective-todo tasks in stable id order for `query_ready`.
+ */
+function executeQueryReady(registry: McpQueryToolRegistry, args: ProjectScopedToolArgs): QueryReadyToolResult {
+  const project = resolveToolProject(registry, args);
+  const status = resolveDetailed(project.index);
+
+  return { tasks: ready(project.index, status.effective) };
+}
+
+/**
+ * Return blocked entities with dependency or propagated gate blockers for `query_blocked`.
+ */
+function executeQueryBlocked(registry: McpQueryToolRegistry, args: ProjectScopedToolArgs): QueryBlockedToolResult {
+  const project = resolveToolProject(registry, args);
+  const status = resolveDetailed(project.index);
+
+  return { blocked: blocked(project.index, status.effective, status.propagatedBy) };
+}
+
+/**
+ * Return the longest same-type dependency path for `critical_path`.
+ */
+function executeCriticalPath(registry: McpQueryToolRegistry, args: CriticalPathToolArgs): CriticalPathToolResult {
+  const project = resolveToolProject(registry, args);
+  return criticalPath(project.index, args.type);
+}
+
+/**
+ * Surface full core validation output for `validate` without modifying the project.
+ */
+function executeValidate(registry: McpQueryToolRegistry, args: ProjectScopedToolArgs): ValidationResult {
+  return validate(resolveToolProject(registry, args).index);
+}
+
+/**
+ * Return registered projects through the tool surface equivalent of `project://list`.
+ */
+function executeListProjects(registry: McpQueryToolRegistry): ListProjectsToolResult {
+  return { projects: registry.listProjects() };
+}
+
+/**
  * Create a JSON resource response with stable pretty-printing for tests and agent readability.
  */
 function jsonResource(uri: string, key: McpResourceKey, value: unknown): McpResourceReadResult {
@@ -777,6 +874,13 @@ function isNamedCoreLookupError(error: unknown): error is Error {
     error instanceof Error &&
     (error.name === "EntityMoveError" || error.name === "EntityParseError" || error.name === "ProjectMarkerParseError")
   );
+}
+
+/**
+ * Identify dependency-cycle errors thrown by core topological sorting.
+ */
+function isGraphCycleError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "GraphCycleError";
 }
 
 /**
