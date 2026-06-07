@@ -1,4 +1,4 @@
-import type { Entity, EntityId, EntityType, Index } from "./types.js";
+import type { EffectiveStatus, Entity, EntityId, EntityType, Index } from "./types.js";
 
 /**
  * Dependency graph for exactly one entity type.
@@ -17,6 +17,34 @@ export interface DepGraph {
   dependenciesOf: Map<EntityId, EntityId[]>;
   /** Reverse same-type edges keyed by prerequisite id, sorted for stable traversal. */
   dependentsOf: Map<EntityId, EntityId[]>;
+}
+
+/**
+ * Blocked query row used by generated indexes, MCP tools, and the read-only viewer.
+ *
+ * `blockedBy` is intentionally just ids. Callers that need titles or links can join against the
+ * same index without making the graph query depend on presentation concerns.
+ */
+export interface BlockedEntity {
+  /** Blocked entity id. */
+  id: EntityId;
+  /** Entity layer for grouping and API responses. */
+  type: EntityType;
+  /** Incomplete same-type dependencies, or the nearest dependency-gated ancestor when propagated. */
+  blockedBy: EntityId[];
+}
+
+/**
+ * Critical-path result for one same-type dependency graph.
+ *
+ * The path is ordered from prerequisite to dependent because it is computed over the design's DAG
+ * direction. `total` is the sum of node weights along that path.
+ */
+export interface CriticalPathResult {
+  /** Longest deterministic dependency chain through the chosen entity type. */
+  path: EntityId[];
+  /** Sum of task estimates, or node count for stories and epics. */
+  total: number;
 }
 
 /**
@@ -130,6 +158,194 @@ export function topoSort(graph: DepGraph): EntityId[] {
   }
 
   return ordered;
+}
+
+/**
+ * Return currently workable task ids in deterministic order.
+ *
+ * The status resolver has already applied same-type dependencies and downward gate propagation, so
+ * an effective `todo` task is by definition ready for an agent to pick up.
+ */
+export function ready(index: Index, eff: Map<EntityId, EffectiveStatus>): EntityId[] {
+  return [...index.byId.values()]
+    .filter((entity) => entity.type === "task" && !entity.archived && eff.get(entity.id) === "todo")
+    .map((entity) => entity.id)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Return blocked entities with the ids that explain the block.
+ *
+ * Own same-type dependency blockers take precedence because they are the direct gate for that
+ * entity. If callers provide status propagation metadata from `resolveDetailed()`, entities blocked
+ * through hierarchy propagation report the nearest gate-blocked ancestor. Roll-up-only blocked
+ * composites have no direct dependency blocker, so they are returned with an empty `blockedBy` list.
+ */
+export function blocked(
+  index: Index,
+  eff: Map<EntityId, EffectiveStatus>,
+  propagatedBy: Map<EntityId, EntityId> = new Map()
+): BlockedEntity[] {
+  const blockedEntities: BlockedEntity[] = [];
+
+  for (const entity of sortedEntities(index)) {
+    if (entity.archived || eff.get(entity.id) !== "blocked") {
+      continue;
+    }
+
+    blockedEntities.push({
+      id: entity.id,
+      type: entity.type,
+      blockedBy: blockersFor(index, eff, propagatedBy, entity)
+    });
+  }
+
+  return blockedEntities;
+}
+
+/**
+ * Compute the deterministic longest path for one same-type dependency DAG.
+ *
+ * Task nodes use `estimate ?? 1` because only tasks carry estimated effort in v1. Composite nodes
+ * use weight 1 so story and epic paths represent longest dependency chains by count.
+ */
+export function criticalPath(index: Index, type: EntityType = "task"): CriticalPathResult {
+  const graph = activeDepGraph(index, type);
+  const orderedIds = topoSort(graph);
+  const bestById = new Map<EntityId, CriticalPathResult>();
+  let bestOverall: CriticalPathResult = { path: [], total: 0 };
+
+  for (const id of orderedIds) {
+    const entity = index.byId.get(id);
+    if (entity === undefined) {
+      continue;
+    }
+
+    const ownWeight = nodeWeight(entity, type);
+    const dependencyBest = bestDependencyPath(graph.dependenciesOf.get(id) ?? [], bestById);
+    const current = {
+      path: [...dependencyBest.path, id],
+      total: dependencyBest.total + ownWeight
+    };
+
+    bestById.set(id, current);
+
+    if (comparePathResults(current, bestOverall) < 0) {
+      bestOverall = current;
+    }
+  }
+
+  return bestOverall;
+}
+
+/**
+ * Build a per-type graph that excludes archived entities from active query results.
+ */
+function activeDepGraph(index: Index, type: EntityType): DepGraph {
+  const activeById = new Map(
+    [...index.byId.entries()].filter(([, entity]) => !entity.archived)
+  );
+
+  return buildDepGraph({ byId: activeById, childrenOf: index.childrenOf }, type);
+}
+
+/**
+ * Choose the strongest completed dependency path feeding a node.
+ */
+function bestDependencyPath(
+  dependencyIds: EntityId[],
+  bestById: Map<EntityId, CriticalPathResult>
+): CriticalPathResult {
+  let best: CriticalPathResult = { path: [], total: 0 };
+
+  for (const dependencyId of dependencyIds) {
+    const candidate = bestById.get(dependencyId);
+    if (candidate !== undefined && comparePathResults(candidate, best) < 0) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Weight a node for critical-path math while preserving the design's task-only estimate rule.
+ */
+function nodeWeight(entity: Entity, type: EntityType): number {
+  if (type !== "task") {
+    return 1;
+  }
+
+  return entity.estimate ?? 1;
+}
+
+/**
+ * Compare path results with higher total first and lexical path tie-breaking for determinism.
+ */
+function comparePathResults(left: CriticalPathResult, right: CriticalPathResult): number {
+  if (left.total !== right.total) {
+    return right.total - left.total;
+  }
+
+  return compareIdPaths(left.path, right.path);
+}
+
+/**
+ * Lexically compare two id paths, preferring the stable non-empty path over the initial empty best.
+ */
+function compareIdPaths(left: EntityId[], right: EntityId[]): number {
+  const length = Math.min(left.length, right.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const comparison = left[index].localeCompare(right[index]);
+    if (comparison !== 0) {
+      return comparison;
+    }
+  }
+
+  return left.length - right.length;
+}
+
+/**
+ * Return active entities in id order so query outputs are stable across platforms.
+ */
+function sortedEntities(index: Index): Entity[] {
+  return [...index.byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Find the blocker ids that best explain one blocked entity.
+ */
+function blockersFor(
+  index: Index,
+  eff: Map<EntityId, EffectiveStatus>,
+  propagatedBy: Map<EntityId, EntityId>,
+  entity: Entity
+): EntityId[] {
+  const ownBlockers = ownIncompleteDependencies(index, eff, entity);
+  if (ownBlockers.length > 0) {
+    return ownBlockers;
+  }
+
+  const propagatedBlocker = propagatedBy.get(entity.id) ?? null;
+  return propagatedBlocker === null ? [] : [propagatedBlocker];
+}
+
+/**
+ * Return known same-type dependencies that are not effectively done.
+ */
+function ownIncompleteDependencies(index: Index, eff: Map<EntityId, EffectiveStatus>, entity: Entity): EntityId[] {
+  return entity.dependsOn
+    .filter((dependencyId) => {
+      const dependency = index.byId.get(dependencyId);
+      return (
+        dependency !== undefined &&
+        !dependency.archived &&
+        dependency.type === entity.type &&
+        eff.get(dependencyId) !== "done"
+      );
+    })
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /**

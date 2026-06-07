@@ -32,7 +32,15 @@ export {
   writeMarker
 } from "./store.js";
 export type { DiscoveredProject, Store } from "./store.js";
-export { buildDepGraph, detectDepCycle, detectHierarchyCycle, topoSort } from "./graph.js";
-export type { DepGraph } from "./graph.js";
+export {
+  blocked,
+  buildDepGraph,
+  criticalPath,
+  detectDepCycle,
+  detectHierarchyCycle,
+  ready,
+  topoSort
+} from "./graph.js";
+export type { BlockedEntity, CriticalPathResult, DepGraph } from "./graph.js";
 export { resolveAll, resolveDetailed } from "./status.js";
 export type { StatusResolution } from "./status.js";
