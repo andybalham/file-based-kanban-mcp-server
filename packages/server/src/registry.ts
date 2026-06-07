@@ -60,6 +60,18 @@ export interface ProjectRegistryOptions {
 }
 
 /**
+ * Construction options for the in-memory registry implementation.
+ *
+ * `initialProjects` is deliberately a list of fully built states. That lets boot discovery, tests,
+ * and future watcher code share the same resolution implementation without making this module scan
+ * files before the Phase 4 discovery/init tasks wire those paths in.
+ */
+export interface CreateProjectRegistryOptions extends ProjectRegistryOptions {
+  /** Optional project states already built by discovery or tests and ready for immediate lookup. */
+  initialProjects?: ProjectState[];
+}
+
+/**
  * Contract for building the runtime state for one marked project.
  *
  * Registry implementation code will call this after `init` or marker discovery. Keeping the
@@ -125,5 +137,115 @@ export class RegistryError extends Error {
     this.name = "RegistryError";
     this.code = code;
     this.projectId = options.projectId;
+  }
+}
+
+/**
+ * Create the server's in-memory project registry.
+ *
+ * The registry stores projects by root, matching the design's `Map<root, ProjectState>`, and builds
+ * project-id lookup results from that source map. Keeping root as the primary key ensures repeated
+ * registration of the same root replaces stale runtime state instead of creating duplicates.
+ */
+export function createProjectRegistry(options: CreateProjectRegistryOptions): ProjectRegistry {
+  return new InMemoryProjectRegistry(options);
+}
+
+/**
+ * Minimal Phase 4 registry implementation for project resolution and listing.
+ *
+ * Filesystem-backed `init`, marker discovery, and boot scanning are intentionally left as guarded
+ * extension points for their specific tasks. The resolution behavior here is complete and shared by
+ * those future paths once they populate `projectsByRoot`.
+ */
+class InMemoryProjectRegistry implements ProjectRegistry {
+  /**
+   * Runtime cache keyed by project root, exactly as required by §9.0.
+   */
+  private readonly projectsByRoot = new Map<string, ProjectState>();
+
+  /**
+   * Watch roots are retained for future boot discovery and watcher wiring.
+   */
+  private readonly watchRoots: string[];
+
+  /**
+   * Seed the registry with already-built project states.
+   */
+  constructor(options: CreateProjectRegistryOptions) {
+    this.watchRoots = [...options.watchRoots];
+
+    for (const project of options.initialProjects ?? []) {
+      this.projectsByRoot.set(project.root, project);
+    }
+  }
+
+  /**
+   * Resolve an optional project id according to the exact §9.0 surface rules.
+   */
+  resolveProject(projectId?: ProjectId): ProjectState {
+    if (projectId !== undefined) {
+      const state = this.findProjectById(projectId);
+      if (state === undefined) {
+        throw new RegistryError("PROJECT_NOT_FOUND", `Project '${projectId}' is not registered.`, { projectId });
+      }
+
+      return state;
+    }
+
+    const states = this.sortedStates();
+    if (states.length === 1) {
+      return states[0] as ProjectState;
+    }
+
+    if (states.length === 0) {
+      throw new RegistryError("PROJECT_NOT_FOUND", "No projects are registered.");
+    }
+
+    throw new RegistryError(
+      "AMBIGUOUS_PROJECT",
+      "Multiple projects are registered; provide projectId to choose one."
+    );
+  }
+
+  /**
+   * Return deterministic public project summaries for discovery resources and viewer APIs.
+   */
+  listProjects(): RegisteredProject[] {
+    return this.sortedStates().map((state) => ({
+      projectId: state.projectId,
+      title: state.marker.title,
+      root: state.root
+    }));
+  }
+
+  /**
+   * Placeholder for the queued init bootstrap task.
+   */
+  async init(_args: InitProjectArgs): Promise<InitProjectResult> {
+    throw new Error("Project registry init is not implemented yet.");
+  }
+
+  /**
+   * Placeholder for the queued discovered-registration task.
+   */
+  async registerDiscovered(_root: string, _marker: ProjectMarker): Promise<ProjectState> {
+    throw new Error("Project discovery registration is not implemented yet.");
+  }
+
+  /**
+   * Search registered states by marker id while preserving root as the source map key.
+   */
+  private findProjectById(projectId: ProjectId): ProjectState | undefined {
+    return this.sortedStates().find((state) => state.projectId === projectId);
+  }
+
+  /**
+   * Sort registry state by project id first, then root, so list output is stable across platforms.
+   */
+  private sortedStates(): ProjectState[] {
+    return [...this.projectsByRoot.values()].sort(
+      (left, right) => left.projectId.localeCompare(right.projectId) || left.root.localeCompare(right.root)
+    );
   }
 }

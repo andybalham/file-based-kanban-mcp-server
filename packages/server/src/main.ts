@@ -3,13 +3,14 @@ import type { ProjectState } from "@file-kanban/core";
 export type {
   InitProjectArgs,
   InitProjectResult,
+  CreateProjectRegistryOptions,
   ProjectRegistry,
   ProjectRegistryOptions,
   ProjectStateBuilder,
   RegisteredProject,
   RegistryErrorCode
 } from "./registry.js";
-export { RegistryError } from "./registry.js";
+export { createProjectRegistry, RegistryError } from "./registry.js";
 
 /**
  * Produce a compact human-readable label for a project.
