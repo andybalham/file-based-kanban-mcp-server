@@ -23,6 +23,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.join(__dirname, "fixtures", "minimal-project");
+const goldenRoot = path.join(__dirname, "fixtures", "golden", "minimal-project");
 const entitiesRoot = path.join(fixtureRoot, ".worktracker", "entities");
 
 async function pathExists(filePath) {
@@ -43,6 +44,19 @@ async function copyFixtureProject() {
   const projectRoot = path.join(root, "minimal-project");
   await fs.cp(fixtureRoot, projectRoot, { recursive: true });
   return projectRoot;
+}
+
+async function assertGeneratedArtifactsMatchGolden(projectRoot, artifacts) {
+  for (const artifact of artifacts) {
+    const relativePath = path.relative(projectRoot, artifact.filePath);
+    const expectedPath = path.join(goldenRoot, relativePath);
+
+    assert.equal(
+      await fs.readFile(artifact.filePath, "utf8"),
+      await fs.readFile(expectedPath, "utf8"),
+      `${relativePath} should match its golden snapshot`
+    );
+  }
 }
 
 test("parse reads frontmatter into the stable Entity shape and preserves Markdown body", async () => {
@@ -429,18 +443,7 @@ test("writeGeneratedArtifacts persists the deterministic navigation and graph ar
     ]
   );
 
-  assert.match(
-    await fs.readFile(path.join(projectRoot, ".worktracker", "index", "INDEX.md"), "utf8"),
-    /## \[E-001 · Project foundation\]\(\.\/E-001\.md\)/
-  );
-  assert.match(
-    await fs.readFile(path.join(projectRoot, ".worktracker", "index", "READY.md"), "utf8"),
-    /\[T-002 · Render board\]\(\.\.\/entities\/T-002-render-board\.md\)/
-  );
-  assert.match(
-    await fs.readFile(path.join(projectRoot, ".worktracker", "graphs", "dependencies.mmd"), "utf8"),
-    /subgraph Tasks[\s\S]*T001 --> T002/
-  );
+  await assertGeneratedArtifactsMatchGolden(projectRoot, artifacts);
 });
 
 test("bound store generated artifact writes skip byte-identical regeneration", async () => {
