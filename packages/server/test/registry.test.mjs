@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createProjectRegistry, RegistryError } from "../dist/main.js";
+import { bootstrapProjectRegistry, createProjectRegistry, RegistryError } from "../dist/main.js";
 
 function makeProject(root, projectId, title) {
   const marker = {
@@ -232,6 +232,26 @@ test("discover registers pre-marked projects from watch roots without init", asy
     }
   ]);
   assert.equal(registry.resolveProject("wt_discovered_a").index.byId.size, 0);
+});
+
+test("bootstrapProjectRegistry discovers pre-marked projects during server startup", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-bootstrap-");
+  const projectRoot = path.join(watchRoot, "repo");
+
+  await writeMarkedProject(projectRoot, "wt_boot_discovered", "Boot Discovered");
+
+  const registry = await bootstrapProjectRegistry({
+    watchRoots: [watchRoot]
+  });
+
+  assert.deepEqual(registry.listProjects(), [
+    {
+      projectId: "wt_boot_discovered",
+      title: "Boot Discovered",
+      root: path.resolve(projectRoot)
+    }
+  ]);
+  assert.equal(registry.resolveProject("wt_boot_discovered").root, path.resolve(projectRoot));
 });
 
 test("registerDiscovered is idempotent and refreshes cached state for the same root", async () => {

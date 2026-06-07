@@ -1,4 +1,6 @@
 import type { ProjectState } from "@file-kanban/core";
+import { createProjectRegistry } from "./registry.js";
+import type { CreateProjectRegistryOptions, ProjectRegistry } from "./registry.js";
 
 export type {
   InitProjectArgs,
@@ -13,6 +15,20 @@ export type {
   RegistryErrorCode
 } from "./registry.js";
 export { createProjectRegistry, RegistryError } from "./registry.js";
+
+/**
+ * Create the process-wide project registry and immediately populate it from configured watch roots.
+ *
+ * This is the server startup path described in the technical design: already-marked repositories
+ * become routable because their `.worktracker/project.json` markers are found during boot, without
+ * requiring agents to call `init`. The lower-level registry still exposes `discover()` separately
+ * for tests, future watcher refreshes, and explicit rescan flows.
+ */
+export async function bootstrapProjectRegistry(options: CreateProjectRegistryOptions): Promise<ProjectRegistry> {
+  const registry = createProjectRegistry(options);
+  await registry.discover();
+  return registry;
+}
 
 /**
  * Produce a compact human-readable label for a project.
