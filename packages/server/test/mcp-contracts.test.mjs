@@ -12,6 +12,7 @@ import {
   MCP_TOOL_NAMES,
   McpAdapterError,
   RegistryError,
+  executeMcpMutationTool,
   executeMcpQueryTool,
   isMcpErrorCode,
   readMcpResource,
@@ -241,6 +242,162 @@ test("executeMcpQueryTool uses registry project resolution errors", () => {
   );
 });
 
+test("executeMcpMutationTool creates an entity and regenerates selected project artifacts", async () => {
+  const root = await makeTempRoot("file-kanban-mcp-create-");
+  const state = mutationProjectState(root);
+  await seedEntityFiles(root, state);
+  const registry = resourceRegistry([state]);
+
+  const result = await executeMcpMutationTool(
+    registry,
+    "create_entity",
+    {
+      type: "story",
+      title: "Created from MCP",
+      parent: "E-001",
+      tags: ["mcp", "created"],
+      body: "\nCreated body.\n"
+    },
+    { now: fixedNow }
+  );
+
+  assert.deepEqual(result, { id: "S-002" });
+  assert.equal(state.index.byId.get("S-002").title, "Created from MCP");
+  assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "S-002-created-from-mcp.md"), "utf8"), /id: S-002/);
+  assert.match(await fs.readFile(path.join(root, ".worktracker", "index", "INDEX.md"), "utf8"), /Created from MCP/);
+});
+
+test("executeMcpMutationTool updates fields, task status, parent, and archived flag", async () => {
+  const root = await makeTempRoot("file-kanban-mcp-mutates-");
+  const state = mutationProjectState(root);
+  await seedEntityFiles(root, state);
+  const registry = resourceRegistry([state]);
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "update_entity",
+      {
+        projectId: "wt_mutation",
+        id: "T-001",
+        fields: {
+          title: "Updated task",
+          estimate: 5,
+          tags: ["updated"]
+        }
+      },
+      { now: fixedNow }
+    ),
+    { id: "T-001" }
+  );
+  assert.equal(state.index.byId.get("T-001").title, "Updated task");
+  assert.equal(state.index.byId.get("T-001").updated, "2026-06-07T12:00:00Z");
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "set_status",
+      { projectId: "wt_mutation", id: "T-001", status: "done" },
+      { now: fixedNow }
+    ),
+    { id: "T-001", effectiveStatus: "done" }
+  );
+
+  await executeMcpMutationTool(
+    registry,
+    "create_entity",
+    { projectId: "wt_mutation", type: "story", title: "Second story", parent: "E-001" },
+    { now: fixedNow }
+  );
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "move_entity",
+      { projectId: "wt_mutation", id: "T-001", newParent: "S-002" },
+      { now: fixedNow }
+    ),
+    { id: "T-001" }
+  );
+  assert.equal(state.index.byId.get("T-001").parent, "S-002");
+
+  assert.deepEqual(
+    await executeMcpMutationTool(
+      registry,
+      "archive_entity",
+      { projectId: "wt_mutation", id: "T-001" },
+      { now: fixedNow }
+    ),
+    { id: "T-001" }
+  );
+  assert.equal(state.index.byId.get("T-001").archived, true);
+});
+
+test("executeMcpMutationTool rejects invalid proposals before touching the store", async () => {
+  const root = await makeTempRoot("file-kanban-mcp-rejects-");
+  const state = mutationProjectState(root);
+  await seedEntityFiles(root, state);
+  const registry = resourceRegistry([state]);
+  const taskPath = path.join(root, ".worktracker", "entities", "T-001-task.md");
+  const before = await fs.readFile(taskPath, "utf8");
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "set_status",
+        { projectId: "wt_mutation", id: "S-001", status: "done" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "NOT_A_TASK",
+        message: "Entity 'S-001' is a story; only tasks store status.",
+        details: { id: "S-001", type: "story" }
+      });
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "move_entity",
+        { projectId: "wt_mutation", id: "T-001", newParent: "E-001" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "INVALID_PARENT_TYPE",
+        message: "task parent 'E-001' must be a story.",
+        details: { entityId: "T-001" }
+      });
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () =>
+      executeMcpMutationTool(
+        registry,
+        "create_entity",
+        { projectId: "wt_mutation", type: "story", title: "No parent" },
+        { now: fixedNow }
+      ),
+    (error) => {
+      assert.deepEqual(toMcpStructuredError(error), {
+        code: "PARENT_REQUIRED",
+        message: "story entities must declare a parent.",
+        details: { entityId: "S-__new__" }
+      });
+      return true;
+    }
+  );
+
+  assert.equal(await fs.readFile(taskPath, "utf8"), before);
+  await assert.rejects(() => fs.access(path.join(root, ".worktracker", ".meta", "counters.json")));
+});
+
 test("MCP error code registry includes every structured design error", () => {
   assert.deepEqual(MCP_ERROR_CODES, [
     "NOT_FOUND",
@@ -434,6 +591,78 @@ function queryProjectState(root) {
     },
     eff: new Map()
   };
+}
+
+function mutationProjectState(root) {
+  const epic = entity({
+    id: "E-001",
+    type: "epic",
+    title: "Epic",
+    parent: null,
+    filePath: path.join(root, ".worktracker", "entities", "E-001-epic.md")
+  });
+  const story = entity({
+    id: "S-001",
+    type: "story",
+    title: "Story",
+    parent: "E-001",
+    filePath: path.join(root, ".worktracker", "entities", "S-001-story.md")
+  });
+  const task = entity({
+    id: "T-001",
+    type: "task",
+    title: "Task",
+    parent: "S-001",
+    filePath: path.join(root, ".worktracker", "entities", "T-001-task.md")
+  });
+  const entities = [epic, story, task];
+
+  return {
+    projectId: "wt_mutation",
+    root,
+    marker: {
+      projectId: "wt_mutation",
+      title: "Mutation Project",
+      created: "2026-06-07T00:00:00Z"
+    },
+    index: {
+      byId: new Map(entities.map((current) => [current.id, current])),
+      childrenOf: new Map([
+        [epic.id, [story.id]],
+        [story.id, [task.id]]
+      ])
+    },
+    eff: new Map([
+      [epic.id, "todo"],
+      [story.id, "todo"],
+      [task.id, "todo"]
+    ])
+  };
+}
+
+async function seedEntityFiles(root, state) {
+  for (const current of state.index.byId.values()) {
+    await writeText(root, path.relative(root, current.filePath), serializeTestEntity(current));
+  }
+}
+
+function serializeTestEntity(current) {
+  return `---
+id: ${current.id}
+type: ${current.type}
+title: ${current.title}
+parent: ${current.parent === null ? "null" : current.parent}
+${current.type === "task" ? `status: ${current.status}\n` : ""}dependsOn: [${current.dependsOn.join(", ")}]
+${current.estimate === undefined ? "" : `estimate: ${current.estimate}\n`}tags: [${current.tags.join(", ")}]
+archived: ${current.archived ? "true" : "false"}
+created: ${current.created}
+updated: ${current.updated}
+---
+${current.body}`;
+}
+
+function fixedNow() {
+  return new Date("2026-06-07T12:00:00Z");
 }
 
 function entity(overrides) {

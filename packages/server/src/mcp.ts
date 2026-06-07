@@ -12,8 +12,9 @@ import type {
   ValidationIssue,
   ValidationResult
 } from "@file-kanban/core";
-import { blocked, criticalPath, ready, resolveDetailed, validate } from "@file-kanban/core";
+import { allocateId, blocked, criticalPath, ready, resolveDetailed, validate, write } from "@file-kanban/core";
 
+import { regenerateProject } from "./regenerate.js";
 import { RegistryError } from "./registry.js";
 import type { RegisteredProject } from "./registry.js";
 
@@ -357,6 +358,14 @@ export interface McpResourceRegistry {
 export interface McpQueryToolRegistry extends McpResourceRegistry {}
 
 /**
+ * Minimal registry surface needed by entity-mutating MCP tools.
+ *
+ * Entity mutations resolve projects the same way resources and query tools do, then write through
+ * core storage and refresh the selected project through the regeneration pipeline.
+ */
+export interface McpMutationToolRegistry extends McpQueryToolRegistry {}
+
+/**
  * Read one MCP resource without depending on MCP SDK transport classes.
  *
  * Project resources are deliberately side-effect free. They read the current in-memory state or the
@@ -569,6 +578,29 @@ export const MCP_TOOL_DEFINITIONS: { [Name in McpToolName]: McpToolDefinition<Na
 export type McpQueryToolName = "query_ready" | "query_blocked" | "critical_path" | "validate" | "list_projects";
 
 /**
+ * Entity-mutating MCP tool names implemented by this phase.
+ *
+ * Dependency link tools are intentionally left for the dedicated dependency-tool task so this write
+ * path stays scoped to create/update/status/move/archive behavior.
+ */
+export type McpEntityMutationToolName =
+  | "create_entity"
+  | "update_entity"
+  | "set_status"
+  | "move_entity"
+  | "archive_entity";
+
+/**
+ * Test seams for deterministic mutation execution.
+ */
+export interface ExecuteMcpMutationToolOptions {
+  /** Clock used for created/updated frontmatter timestamps. */
+  now?: () => Date;
+  /** Regeneration implementation invoked after a successful entity write. */
+  regenerate?: typeof regenerateProject;
+}
+
+/**
  * Execute one non-mutating MCP tool against the supplied registry.
  *
  * The concrete stdio adapter can call this from its SDK handler and then serialize the returned
@@ -591,6 +623,33 @@ export function executeMcpQueryTool<Name extends McpQueryToolName>(
       return executeValidate(registry, args as ProjectScopedToolArgs) as McpToolResultByName[Name];
     case "list_projects":
       return executeListProjects(registry) as McpToolResultByName[Name];
+  }
+}
+
+/**
+ * Execute one entity-mutating MCP tool with validate-before-commit semantics.
+ *
+ * Each branch builds the full proposed index in memory first, maps the first blocking validation
+ * issue to the public MCP error contract, writes only after that proposal is accepted, and finally
+ * regenerates derived artifacts for the selected project.
+ */
+export async function executeMcpMutationTool<Name extends McpEntityMutationToolName>(
+  registry: McpMutationToolRegistry,
+  name: Name,
+  args: McpToolArgsByName[Name],
+  options: ExecuteMcpMutationToolOptions = {}
+): Promise<McpToolResultByName[Name]> {
+  switch (name) {
+    case "create_entity":
+      return executeCreateEntity(registry, args as CreateEntityToolArgs, options) as Promise<McpToolResultByName[Name]>;
+    case "update_entity":
+      return executeUpdateEntity(registry, args as UpdateEntityToolArgs, options) as Promise<McpToolResultByName[Name]>;
+    case "set_status":
+      return executeSetStatus(registry, args as SetStatusToolArgs, options) as Promise<McpToolResultByName[Name]>;
+    case "move_entity":
+      return executeMoveEntity(registry, args as MoveEntityToolArgs, options) as Promise<McpToolResultByName[Name]>;
+    case "archive_entity":
+      return executeArchiveEntity(registry, args as ArchiveEntityToolArgs, options) as Promise<McpToolResultByName[Name]>;
   }
 }
 
@@ -807,6 +866,315 @@ function executeValidate(registry: McpQueryToolRegistry, args: ProjectScopedTool
  */
 function executeListProjects(registry: McpQueryToolRegistry): ListProjectsToolResult {
   return { projects: registry.listProjects() };
+}
+
+/**
+ * Create an entity after proving the requested parent/dependency shape is valid.
+ */
+async function executeCreateEntity(
+  registry: McpMutationToolRegistry,
+  args: CreateEntityToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<EntityIdToolResult> {
+  assertEntityType(args.type);
+
+  const project = resolveMutationProject(registry, args);
+  const timestamp = timestampFromOptions(options);
+  const preliminaryEntity = newEntity(args, temporaryEntityId(args.type), timestamp);
+
+  assertValidProposal(proposedIndex(project.index, preliminaryEntity));
+
+  const id = await allocateId(project.root, args.type);
+  const entity = {
+    ...preliminaryEntity,
+    id,
+    filePath: path.join(".worktracker", "entities", `${id}-${slugifyTitle(args.title)}.md`)
+  };
+
+  assertValidProposal(proposedIndex(project.index, entity));
+  await write(project.root, entity);
+  await regenerateMutationProject(project, options);
+
+  return { id };
+}
+
+/**
+ * Update only the mutable fields exposed by `update_entity`.
+ */
+async function executeUpdateEntity(
+  registry: McpMutationToolRegistry,
+  args: UpdateEntityToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<EntityIdToolResult> {
+  assertNoImmutableUpdateFields(args.fields);
+
+  const project = resolveMutationProject(registry, args);
+  const current = requiredToolEntity(project, args.id);
+  const next = withUpdatedTimestampIfChanged(current, {
+    ...current,
+    ...(args.fields.title === undefined ? {} : { title: args.fields.title }),
+    ...(args.fields.body === undefined ? {} : { body: args.fields.body }),
+    ...(args.fields.estimate === undefined ? {} : { estimate: args.fields.estimate }),
+    ...(args.fields.tags === undefined ? {} : { tags: [...args.fields.tags] })
+  }, options);
+
+  assertValidProposal(proposedIndex(project.index, next));
+  await write(project.root, next);
+  await regenerateMutationProject(project, options);
+
+  return { id: current.id };
+}
+
+/**
+ * Persist task status and return the recomputed effective status.
+ */
+async function executeSetStatus(
+  registry: McpMutationToolRegistry,
+  args: SetStatusToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<SetStatusToolResult> {
+  assertStoredStatus(args.status);
+
+  const project = resolveMutationProject(registry, args);
+  const current = requiredToolEntity(project, args.id);
+  if (current.type !== "task") {
+    throw new McpAdapterError("NOT_A_TASK", `Entity '${current.id}' is a ${current.type}; only tasks store status.`, {
+      id: current.id,
+      type: current.type
+    });
+  }
+
+  const next = withUpdatedTimestampIfChanged(current, { ...current, status: args.status }, options);
+  assertValidProposal(proposedIndex(project.index, next));
+  await write(project.root, next);
+  await regenerateMutationProject(project, options);
+
+  return { id: current.id, effectiveStatus: project.eff.get(current.id) ?? args.status };
+}
+
+/**
+ * Change one entity parent after validating hierarchy invariants.
+ */
+async function executeMoveEntity(
+  registry: McpMutationToolRegistry,
+  args: MoveEntityToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<EntityIdToolResult> {
+  const project = resolveMutationProject(registry, args);
+  const current = requiredToolEntity(project, args.id);
+  const next = withUpdatedTimestampIfChanged(current, { ...current, parent: args.newParent }, options);
+
+  assertValidProposal(proposedIndex(project.index, next));
+  await write(project.root, next);
+  await regenerateMutationProject(project, options);
+
+  return { id: current.id };
+}
+
+/**
+ * Soft-delete one entity by setting its archived flag.
+ */
+async function executeArchiveEntity(
+  registry: McpMutationToolRegistry,
+  args: ArchiveEntityToolArgs,
+  options: ExecuteMcpMutationToolOptions
+): Promise<EntityIdToolResult> {
+  const project = resolveMutationProject(registry, args);
+  const current = requiredToolEntity(project, args.id);
+  const next = withUpdatedTimestampIfChanged(current, { ...current, archived: true }, options);
+
+  assertValidProposal(proposedIndex(project.index, next));
+  await write(project.root, next);
+  await regenerateMutationProject(project, options);
+
+  return { id: current.id };
+}
+
+/**
+ * Resolve a project for mutating tools using the same §9.0 rules as query tools.
+ */
+function resolveMutationProject(registry: McpMutationToolRegistry, args: ProjectScopedToolArgs): ProjectState {
+  return registry.resolveProject(args.projectId);
+}
+
+/**
+ * Return one entity from the selected project or raise the public lookup error.
+ */
+function requiredToolEntity(project: ProjectState, id: EntityId): Entity {
+  const entity = project.index.byId.get(id);
+  if (entity === undefined) {
+    throw new McpAdapterError("NOT_FOUND", `Entity '${id}' was not found.`, { projectId: project.projectId, id });
+  }
+
+  return entity;
+}
+
+/**
+ * Build a proposed index by replacing or inserting exactly one entity.
+ */
+function proposedIndex(index: ProjectState["index"], entity: Entity): ProjectState["index"] {
+  const entities = [...index.byId.values()].filter((current) => current.id !== entity.id);
+  entities.push(entity);
+  entities.sort((left, right) => left.id.localeCompare(right.id));
+
+  const byId = new Map<EntityId, Entity>();
+  const childrenOf = new Map<EntityId, EntityId[]>();
+
+  for (const current of entities) {
+    byId.set(current.id, current);
+
+    if (current.parent !== null) {
+      const children = childrenOf.get(current.parent) ?? [];
+      children.push(current.id);
+      childrenOf.set(current.parent, children);
+    }
+  }
+
+  for (const children of childrenOf.values()) {
+    children.sort((left, right) => left.localeCompare(right));
+  }
+
+  return { byId, childrenOf };
+}
+
+/**
+ * Convert the first blocking validation issue into the structured MCP error promised by §9.4.
+ */
+function assertValidProposal(index: ProjectState["index"]): void {
+  const result = validate(index);
+  const issue = result.errors[0];
+  if (issue === undefined) {
+    return;
+  }
+
+  const structured = validationIssueToMcpError(issue);
+  throw new McpAdapterError(structured.code, structured.message, structured.details);
+}
+
+/**
+ * Build a new entity using request data and canonical defaults.
+ */
+function newEntity(args: CreateEntityToolArgs, id: EntityId, timestamp: string): Entity {
+  return {
+    id,
+    type: args.type,
+    title: args.title,
+    parent: args.parent ?? null,
+    status: "todo",
+    dependsOn: [...(args.dependsOn ?? [])],
+    ...(args.estimate === undefined ? {} : { estimate: args.estimate }),
+    tags: [...(args.tags ?? [])],
+    archived: false,
+    created: timestamp,
+    updated: timestamp,
+    body: args.body ?? "\n",
+    filePath: path.join(".worktracker", "entities", `${id}-${slugifyTitle(args.title)}.md`)
+  };
+}
+
+/**
+ * Preserve `updated` on semantic no-ops so callers do not create timestamp-only churn.
+ */
+function withUpdatedTimestampIfChanged(
+  current: Entity,
+  next: Entity,
+  options: ExecuteMcpMutationToolOptions
+): Entity {
+  return entitySemanticKey(current) === entitySemanticKey(next)
+    ? current
+    : { ...next, updated: timestampFromOptions(options) };
+}
+
+/**
+ * Compare user-visible entity semantics while ignoring the timestamp that records a real change.
+ */
+function entitySemanticKey(entity: Entity): string {
+  return JSON.stringify({
+    title: entity.title,
+    parent: entity.parent,
+    status: entity.status,
+    dependsOn: [...entity.dependsOn].sort((left, right) => left.localeCompare(right)),
+    estimate: entity.estimate,
+    tags: [...entity.tags].sort((left, right) => left.localeCompare(right)),
+    archived: entity.archived,
+    body: entity.body
+  });
+}
+
+/**
+ * Refresh generated artifacts after a successful write.
+ */
+async function regenerateMutationProject(
+  project: ProjectState,
+  options: ExecuteMcpMutationToolOptions
+): Promise<void> {
+  await (options.regenerate ?? regenerateProject)(project);
+}
+
+/**
+ * Return the canonical timestamp string used by persisted frontmatter.
+ */
+function timestampFromOptions(options: ExecuteMcpMutationToolOptions): string {
+  return (options.now ?? (() => new Date()))().toISOString().replace(".000Z", "Z");
+}
+
+/**
+ * Create a deterministic placeholder id for pre-allocation proposal validation.
+ */
+function temporaryEntityId(type: EntityType): EntityId {
+  switch (type) {
+    case "epic":
+      return "E-__new__";
+    case "story":
+      return "S-__new__";
+    case "task":
+      return "T-__new__";
+  }
+}
+
+/**
+ * Validate runtime entity type input before building a proposed entity.
+ */
+function assertEntityType(type: EntityType): void {
+  if (!["epic", "story", "task"].includes(type)) {
+    throw new McpAdapterError("NOT_FOUND", `Entity type '${String(type)}' is not supported.`, { type });
+  }
+}
+
+/**
+ * Validate runtime task status input before writing frontmatter.
+ */
+function assertStoredStatus(status: StoredStatus): void {
+  if (!["todo", "in-progress", "done"].includes(status)) {
+    throw new McpAdapterError("INVALID_STATUS", `Status '${String(status)}' is not supported.`, { status });
+  }
+}
+
+/**
+ * Reject relationship and identity fields if a raw client passes them inside `fields`.
+ */
+function assertNoImmutableUpdateFields(fields: UpdateEntityFields): void {
+  const immutableFields = ["id", "type", "status", "parent", "dependsOn"] as const;
+  const rawFields = fields as Record<string, unknown>;
+  const forbidden = immutableFields.find((field) => field in rawFields);
+
+  if (forbidden !== undefined) {
+    throw new McpAdapterError("IMMUTABLE_FIELD", `Field '${forbidden}' cannot be changed by update_entity.`, {
+      field: forbidden
+    });
+  }
+}
+
+/**
+ * Convert titles into readable file-name suffixes while keeping ids authoritative.
+ */
+function slugifyTitle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug.length === 0 ? "entity" : slug;
 }
 
 /**
