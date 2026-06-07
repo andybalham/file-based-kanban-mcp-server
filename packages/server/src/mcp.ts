@@ -1,8 +1,13 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
 import type {
   EffectiveStatus,
+  Entity,
   EntityId,
   EntityType,
   ProjectId,
+  ProjectState,
   StoredStatus,
   ValidationIssue,
   ValidationResult
@@ -25,6 +30,52 @@ export const MCP_RESOURCE_TEMPLATES = {
   epicGraph: "graph://{project}/epic/{id}",
   boardIndex: "index://{project}/board"
 } as const;
+
+/**
+ * Human-readable resource definitions used by the SDK registration layer.
+ *
+ * These definitions are intentionally SDK-neutral for the same reason the tool definitions below
+ * are SDK-neutral: tests can verify the public MCP surface without depending on transport classes,
+ * while the eventual stdio adapter can register the same metadata in a simple loop.
+ */
+export const MCP_RESOURCE_DEFINITIONS: { [Key in McpResourceKey]: McpResourceDefinition<Key> } = {
+  projectList: {
+    key: "projectList",
+    uriTemplate: MCP_RESOURCE_TEMPLATES.projectList,
+    description: "List registered work-tracker projects in deterministic order.",
+    mimeType: "application/json"
+  },
+  requirementsSource: {
+    key: "requirementsSource",
+    uriTemplate: MCP_RESOURCE_TEMPLATES.requirementsSource,
+    description: "Read the human-authored requirements source for a selected project.",
+    mimeType: "text/markdown"
+  },
+  entity: {
+    key: "entity",
+    uriTemplate: MCP_RESOURCE_TEMPLATES.entity,
+    description: "Read one entity with authoritative frontmatter fields and Markdown body.",
+    mimeType: "application/json"
+  },
+  dependenciesGraph: {
+    key: "dependenciesGraph",
+    uriTemplate: MCP_RESOURCE_TEMPLATES.dependenciesGraph,
+    description: "Read the generated full same-type dependency Mermaid graph.",
+    mimeType: "text/plain"
+  },
+  epicGraph: {
+    key: "epicGraph",
+    uriTemplate: MCP_RESOURCE_TEMPLATES.epicGraph,
+    description: "Read the generated Mermaid dependency subgraph for one epic.",
+    mimeType: "text/plain"
+  },
+  boardIndex: {
+    key: "boardIndex",
+    uriTemplate: MCP_RESOURCE_TEMPLATES.boardIndex,
+    description: "Read the generated top-level board Markdown index.",
+    mimeType: "text/markdown"
+  }
+};
 
 /**
  * Stable MCP tool names from §9.2.
@@ -82,6 +133,47 @@ export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
 
 /** One structured MCP error code in {@link MCP_ERROR_CODES}. */
 export type McpErrorCode = (typeof MCP_ERROR_CODES)[number];
+
+/** Media type returned for an MCP resource body. */
+export type McpResourceMimeType = "application/json" | "text/markdown" | "text/plain";
+
+/**
+ * SDK-neutral definition for one public MCP resource.
+ */
+export interface McpResourceDefinition<Key extends McpResourceKey = McpResourceKey> {
+  /** Stable resource key used by tests and registration loops. */
+  key: Key;
+  /** URI template from §9.1. */
+  uriTemplate: (typeof MCP_RESOURCE_TEMPLATES)[Key];
+  /** Short description of the resource contract. */
+  description: string;
+  /** Content type returned when this resource is read. */
+  mimeType: McpResourceMimeType;
+}
+
+/**
+ * Parsed parameters for a concrete resource read.
+ */
+export interface McpResourceReadArgs {
+  /** Concrete resource key being read. */
+  key: McpResourceKey;
+  /** Optional project id extracted from the URI for project-scoped resources. */
+  projectId?: ProjectId;
+  /** Optional entity or epic id extracted from the URI. */
+  id?: EntityId;
+}
+
+/**
+ * Text response returned by a resource read.
+ */
+export interface McpResourceReadResult {
+  /** Concrete URI that was read by the adapter. */
+  uri: string;
+  /** MIME type matching the resource definition. */
+  mimeType: McpResourceMimeType;
+  /** Resource body returned as UTF-8 text. JSON resources are already serialized. */
+  text: string;
+}
 
 /**
  * Common optional project selector used by every project-scoped tool except `init` and
@@ -239,6 +331,64 @@ export interface CriticalPathToolResult {
 export interface ListProjectsToolResult {
   /** Registered projects in deterministic order. */
   projects: RegisteredProject[];
+}
+
+/**
+ * Minimal registry surface needed by read-only MCP resources.
+ *
+ * Using this narrow interface keeps resource tests lightweight while remaining compatible with the
+ * full `ProjectRegistry` implementation from `registry.ts`.
+ */
+export interface McpResourceRegistry {
+  /** Return deterministic public project summaries for `project://list`. */
+  listProjects(): RegisteredProject[];
+  /** Resolve a project id or raise the registry's structured project-selection error. */
+  resolveProject(projectId?: ProjectId): ProjectState;
+}
+
+/**
+ * Read one MCP resource without depending on MCP SDK transport classes.
+ *
+ * Project resources are deliberately side-effect free. They read the current in-memory state or the
+ * generated/user-authored file that the design names in §9.1; they do not rescan, regenerate, or
+ * normalize entity Markdown bodies during a read.
+ */
+export async function readMcpResource(
+  registry: McpResourceRegistry,
+  args: McpResourceReadArgs
+): Promise<McpResourceReadResult> {
+  switch (args.key) {
+    case "projectList":
+      return jsonResource(MCP_RESOURCE_TEMPLATES.projectList, "projectList", {
+        projects: registry.listProjects()
+      });
+    case "requirementsSource":
+      return textFileResource(
+        concreteResourceUri(args),
+        "requirementsSource",
+        path.join(resolveResourceProject(registry, args).root, ".worktracker", "requirements", "source.md")
+      );
+    case "entity":
+      return jsonResource(concreteResourceUri(args), "entity", serializeResourceEntity(resolveResourceEntity(registry, args)));
+    case "dependenciesGraph":
+      return textFileResource(
+        concreteResourceUri(args),
+        "dependenciesGraph",
+        path.join(resolveResourceProject(registry, args).root, ".worktracker", "graphs", "dependencies.mmd")
+      );
+    case "epicGraph":
+      return textFileResource(
+        concreteResourceUri(args),
+        "epicGraph",
+        path.join(resolveResourceProject(registry, args).root, ".worktracker", "graphs", `${requiredResourceId(args)}.mmd`)
+      );
+    case "boardIndex":
+      return textFileResource(
+        concreteResourceUri(args),
+        "boardIndex",
+        path.join(resolveResourceProject(registry, args).root, ".worktracker", "index", "INDEX.md")
+      );
+  }
 }
 
 /**
@@ -498,6 +648,121 @@ export function isMcpErrorCode(code: string): code is McpErrorCode {
 }
 
 /**
+ * Resolve a concrete project for project-scoped resource reads.
+ */
+function resolveResourceProject(registry: McpResourceRegistry, args: McpResourceReadArgs): ProjectState {
+  return registry.resolveProject(requiredResourceProjectId(args));
+}
+
+/**
+ * Resolve one entity from the selected project.
+ */
+function resolveResourceEntity(registry: McpResourceRegistry, args: McpResourceReadArgs): Entity {
+  const project = resolveResourceProject(registry, args);
+  const id = requiredResourceId(args);
+  const entity = project.index.byId.get(id);
+
+  if (entity === undefined) {
+    throw new McpAdapterError("NOT_FOUND", `Entity '${id}' was not found.`, { projectId: project.projectId, id });
+  }
+
+  return entity;
+}
+
+/**
+ * Return the project id required by every project-scoped resource except `project://list`.
+ */
+function requiredResourceProjectId(args: McpResourceReadArgs): ProjectId {
+  if (args.projectId === undefined || args.projectId.length === 0) {
+    throw new McpAdapterError("PROJECT_NOT_FOUND", `Resource '${args.key}' requires a project id.`);
+  }
+
+  return args.projectId;
+}
+
+/**
+ * Return the id required by entity and per-epic graph resources.
+ */
+function requiredResourceId(args: McpResourceReadArgs): EntityId {
+  if (args.id === undefined || args.id.length === 0) {
+    throw new McpAdapterError("NOT_FOUND", `Resource '${args.key}' requires an entity id.`);
+  }
+
+  return args.id;
+}
+
+/**
+ * Serialize one entity as JSON without leaking Map instances or relying on filesystem parsing.
+ */
+function serializeResourceEntity(entity: Entity): Record<string, unknown> {
+  return {
+    id: entity.id,
+    type: entity.type,
+    title: entity.title,
+    parent: entity.parent,
+    status: entity.status,
+    dependsOn: entity.dependsOn,
+    ...(entity.estimate === undefined ? {} : { estimate: entity.estimate }),
+    tags: entity.tags,
+    archived: entity.archived,
+    created: entity.created,
+    updated: entity.updated,
+    body: entity.body,
+    filePath: entity.filePath
+  };
+}
+
+/**
+ * Create a JSON resource response with stable pretty-printing for tests and agent readability.
+ */
+function jsonResource(uri: string, key: McpResourceKey, value: unknown): McpResourceReadResult {
+  return {
+    uri,
+    mimeType: MCP_RESOURCE_DEFINITIONS[key].mimeType,
+    text: `${JSON.stringify(value, null, 2)}\n`
+  };
+}
+
+/**
+ * Read a UTF-8 text file for generated Markdown, generated Mermaid, or seeded requirements.
+ */
+async function textFileResource(uri: string, key: McpResourceKey, filePath: string): Promise<McpResourceReadResult> {
+  try {
+    return {
+      uri,
+      mimeType: MCP_RESOURCE_DEFINITIONS[key].mimeType,
+      text: await fs.readFile(filePath, "utf8")
+    };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new McpAdapterError("NOT_FOUND", `Resource file '${filePath}' was not found.`, { filePath });
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Materialize the concrete URI for the already-parsed resource arguments.
+ */
+function concreteResourceUri(args: McpResourceReadArgs): string {
+  switch (args.key) {
+    case "projectList":
+      return MCP_RESOURCE_TEMPLATES.projectList;
+    case "requirementsSource":
+      return `requirements://${requiredResourceProjectId(args)}/source`;
+    case "entity":
+      return `entity://${requiredResourceProjectId(args)}/${requiredResourceId(args)}`;
+    case "dependenciesGraph":
+      return `graph://${requiredResourceProjectId(args)}/dependencies`;
+    case "epicGraph":
+      return `graph://${requiredResourceProjectId(args)}/epic/${requiredResourceId(args)}`;
+    case "boardIndex":
+      return `index://${requiredResourceProjectId(args)}/board`;
+  }
+}
+
+/**
  * Attach `details` only when there is useful structured context to return.
  */
 function withOptionalDetails(code: McpErrorCode, message: string, details: unknown): McpStructuredError {
@@ -512,4 +777,11 @@ function isNamedCoreLookupError(error: unknown): error is Error {
     error instanceof Error &&
     (error.name === "EntityMoveError" || error.name === "EntityParseError" || error.name === "ProjectMarkerParseError")
   );
+}
+
+/**
+ * Narrow unknown filesystem errors to Node errors with a stable `code` field.
+ */
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }

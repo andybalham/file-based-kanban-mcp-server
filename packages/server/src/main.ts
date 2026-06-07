@@ -18,11 +18,13 @@ export { createProjectRegistry, RegistryError } from "./registry.js";
 
 export {
   MCP_ERROR_CODES,
+  MCP_RESOURCE_DEFINITIONS,
   MCP_RESOURCE_TEMPLATES,
   MCP_TOOL_DEFINITIONS,
   MCP_TOOL_NAMES,
   McpAdapterError,
   isMcpErrorCode,
+  readMcpResource,
   toMcpStructuredError,
   validationIssueCodeToMcpErrorCode,
   validationIssueToMcpError
@@ -39,7 +41,12 @@ export type {
   InitToolResult,
   ListProjectsToolResult,
   McpErrorCode,
+  McpResourceDefinition,
   McpResourceKey,
+  McpResourceMimeType,
+  McpResourceReadArgs,
+  McpResourceReadResult,
+  McpResourceRegistry,
   McpStructuredError,
   McpToolArgsByName,
   McpToolDefinition,
