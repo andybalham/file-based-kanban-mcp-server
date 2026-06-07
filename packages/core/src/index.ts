@@ -45,3 +45,4 @@ export type { BlockedEntity, CriticalPathResult, DepGraph } from "./graph.js";
 export { resolveAll, resolveDetailed } from "./status.js";
 export type { StatusResolution } from "./status.js";
 export { validate } from "./validate.js";
+export { renderDependencies, renderEpicSubgraph } from "./mermaid.js";
