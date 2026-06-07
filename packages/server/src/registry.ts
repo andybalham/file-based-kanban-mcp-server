@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { readMarker, resolveAll, scan, seedRequirements, writeMarker } from "@file-kanban/core";
+import { discoverProjects, readMarker, resolveAll, scan, seedRequirements, writeMarker } from "@file-kanban/core";
 import type { ProjectId, ProjectMarker, ProjectState } from "@file-kanban/core";
 
 /**
@@ -75,9 +75,9 @@ export interface ProjectRegistryOptions {
 /**
  * Construction options for the in-memory registry implementation.
  *
- * `initialProjects` is deliberately a list of fully built states. That lets boot discovery, tests,
- * and future watcher code share the same resolution implementation without making this module scan
- * files before the Phase 4 discovery/init tasks wire those paths in.
+ * `initialProjects` is deliberately a list of fully built states. That lets tests and future
+ * adapters seed known projects while boot discovery still uses the same resolution implementation
+ * after scanning configured watch roots.
  */
 export interface CreateProjectRegistryOptions extends ProjectRegistryOptions {
   /** Optional project states already built by discovery or tests and ready for immediate lookup. */
@@ -135,6 +135,14 @@ export interface ProjectRegistry {
    * List registered projects in deterministic order for MCP resources and HTTP project pickers.
    */
   listProjects(): RegisteredProject[];
+
+  /**
+   * Scan configured watch roots for project markers and register every discovered project.
+   *
+   * Server startup uses this instead of `init`; pre-marked projects must become available solely
+   * because their portable marker exists under a watched root.
+   */
+  discover(): Promise<ProjectState[]>;
 
   /**
    * Bootstrap or reuse a project marker, then synchronously register the resulting project state
@@ -272,6 +280,24 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   }
 
   /**
+   * Rebuild registry state from markers found below the configured watch roots.
+   *
+   * The core discovery walker owns marker traversal rules, including ignore handling and stopping
+   * at the first marker under a project root. The registry's job is to turn each marker into fresh
+   * runtime state and cache it by root.
+   */
+  async discover(): Promise<ProjectState[]> {
+    const discoveredProjects = await discoverProjects(this.watchRoots);
+    const states: ProjectState[] = [];
+
+    for (const discoveredProject of discoveredProjects) {
+      states.push(await this.registerDiscovered(discoveredProject.root, discoveredProject.marker));
+    }
+
+    return states;
+  }
+
+  /**
    * Bootstrap a project root and register it before returning the project id.
    *
    * Existing markers are treated as authoritative: init returns their id, performs no marker or
@@ -305,10 +331,14 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   }
 
   /**
-   * Placeholder for the queued discovered-registration task.
+   * Register a marker found by boot discovery or by the future marker watcher.
+   *
+   * Discovery never writes seed content. A discovered marker is already the source of truth, so the
+   * operation only normalizes the root, scans current project content, computes effective statuses,
+   * and replaces any stale cached state for that root.
    */
-  async registerDiscovered(_root: string, _marker: ProjectMarker): Promise<ProjectState> {
-    throw new Error("Project discovery registration is not implemented yet.");
+  async registerDiscovered(root: string, marker: ProjectMarker): Promise<ProjectState> {
+    return this.registerProjectRoot(path.resolve(root), marker);
   }
 
   /**
@@ -331,6 +361,16 @@ class InMemoryProjectRegistry implements ProjectRegistry {
    * Build and cache runtime state for an initialized root.
    */
   private async registerInitializedRoot(root: string, marker: ProjectMarker): Promise<ProjectState> {
+    return this.registerProjectRoot(root, marker);
+  }
+
+  /**
+   * Shared "scan root -> build ProjectState -> insert" step for init and discovered markers.
+   *
+   * Keeping the insertion logic in one place enforces the design invariant that init-created
+   * projects and externally discovered projects converge on identical runtime state.
+   */
+  private async registerProjectRoot(root: string, marker: ProjectMarker): Promise<ProjectState> {
     const state = await this.buildProjectState(root, marker);
     const registeredState = { ...state, root };
     this.projectsByRoot.set(root, registeredState);

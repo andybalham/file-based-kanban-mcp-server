@@ -46,6 +46,17 @@ async function pathExists(filePath) {
   }
 }
 
+async function writeMarkedProject(root, projectId, title) {
+  const markerPath = path.join(root, ".worktracker", "project.json");
+
+  await fs.mkdir(path.join(root, ".worktracker", "entities"), { recursive: true });
+  await fs.writeFile(
+    markerPath,
+    `{\n  "projectId": "${projectId}",\n  "title": "${title}",\n  "created": "2026-06-07T00:00:00Z"\n}\n`,
+    "utf8"
+  );
+}
+
 test("listProjects returns deterministic public project summaries", () => {
   const registry = createProjectRegistry({
     watchRoots: [],
@@ -188,4 +199,87 @@ test("init on an already marked root returns the existing id and does not reseed
   );
   assert.equal(await readText(requirementsPath), "Human-authored requirements");
   assert.equal(registry.resolveProject("wt_existing").marker.title, "Existing Project");
+});
+
+test("discover registers pre-marked projects from watch roots without init", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-discover-");
+  const firstRoot = path.join(watchRoot, "repo-a");
+  const secondRoot = path.join(watchRoot, "repo-b");
+
+  await writeMarkedProject(firstRoot, "wt_discovered_a", "Discovered A");
+  await writeMarkedProject(secondRoot, "wt_discovered_b", "Discovered B");
+
+  const registry = createProjectRegistry({
+    watchRoots: [watchRoot]
+  });
+
+  const states = await registry.discover();
+
+  assert.deepEqual(
+    states.map((state) => state.projectId),
+    ["wt_discovered_a", "wt_discovered_b"]
+  );
+  assert.deepEqual(registry.listProjects(), [
+    {
+      projectId: "wt_discovered_a",
+      title: "Discovered A",
+      root: path.resolve(firstRoot)
+    },
+    {
+      projectId: "wt_discovered_b",
+      title: "Discovered B",
+      root: path.resolve(secondRoot)
+    }
+  ]);
+  assert.equal(registry.resolveProject("wt_discovered_a").index.byId.size, 0);
+});
+
+test("registerDiscovered is idempotent and refreshes cached state for the same root", async () => {
+  const root = await makeTempRoot("file-kanban-registry-register-discovered-");
+  const marker = {
+    projectId: "wt_discovered_refresh",
+    title: "Discovered Refresh",
+    created: "2026-06-07T00:00:00Z"
+  };
+  const builtStates = [
+    makeProject(root, marker.projectId, marker.title),
+    {
+      ...makeProject(root, marker.projectId, "Updated Title"),
+      marker: { ...marker, title: "Updated Title" }
+    }
+  ];
+  const registry = createProjectRegistry({
+    watchRoots: [],
+    buildProjectState: async () => builtStates.shift()
+  });
+
+  await registry.registerDiscovered(root, marker);
+  await registry.registerDiscovered(root, { ...marker, title: "Updated Title" });
+
+  assert.deepEqual(registry.listProjects(), [
+    {
+      projectId: "wt_discovered_refresh",
+      title: "Updated Title",
+      root: path.resolve(root)
+    }
+  ]);
+});
+
+test("a fresh registry rebuilds identical project summaries from discovered markers", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-rebuild-");
+  const projectRoot = path.join(watchRoot, "repo");
+
+  await writeMarkedProject(projectRoot, "wt_rebuild", "Rebuildable Project");
+
+  const firstRegistry = createProjectRegistry({
+    watchRoots: [watchRoot]
+  });
+  const secondRegistry = createProjectRegistry({
+    watchRoots: [watchRoot]
+  });
+
+  await firstRegistry.discover();
+  await secondRegistry.discover();
+
+  assert.deepEqual(secondRegistry.listProjects(), firstRegistry.listProjects());
 });
