@@ -5,12 +5,16 @@
   "type": "module",
   "main": "dist/main.js",
   "types": "dist/main.d.ts",
+  "bin": {
+    "file-kanban-mcp": "dist/stdio.js"
+  },
   "scripts": {
     "build": "tsc -b",
     "lint": "tsc -b --noEmit",
     "test": "node --test"
   },
   "dependencies": {
-    "@file-kanban/core": "0.0.0"
+    "@file-kanban/core": "0.0.0",
+    "@modelcontextprotocol/sdk": "^1.17.3"
   }
 }
