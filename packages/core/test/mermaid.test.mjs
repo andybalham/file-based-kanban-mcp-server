@@ -54,11 +54,11 @@ test("renderDependencies emits deterministic same-type Mermaid bands with click 
   ]);
 
   assert.equal(renderDependencies(index, resolveAll(index)), `graph LR
-  classDef done fill:#c6f6d5,stroke:#22543d;
-  classDef blocked fill:#fed7d7,stroke:#742a2a;
-  classDef inprogress fill:#feebc8,stroke:#744210;
-  classDef todo fill:#e2e8f0,stroke:#2d3748;
-  classDef empty fill:#edf2f7,stroke:#718096,stroke-dasharray: 3 3;
+  classDef done fill:#14532d,stroke:#86efac,color:#f0fdf4;
+  classDef blocked fill:#7f1d1d,stroke:#fca5a5,color:#fff7f7;
+  classDef inprogress fill:#78350f,stroke:#fbbf24,color:#fffbeb;
+  classDef todo fill:#1e3a8a,stroke:#93c5fd,color:#eff6ff;
+  classDef empty fill:#374151,stroke:#d1d5db,color:#f9fafb,stroke-dasharray: 3 3;
   subgraph Epics
     E001["E-001 Auth"]:::blocked
     E002["E-002 Platform"]:::todo
@@ -96,11 +96,11 @@ test("renderEpicSubgraph includes only an epic's own story and task dependency e
   ]);
 
   assert.equal(renderEpicSubgraph(index, "E-001", resolveAll(index)), `graph LR
-  classDef done fill:#c6f6d5,stroke:#22543d;
-  classDef blocked fill:#fed7d7,stroke:#742a2a;
-  classDef inprogress fill:#feebc8,stroke:#744210;
-  classDef todo fill:#e2e8f0,stroke:#2d3748;
-  classDef empty fill:#edf2f7,stroke:#718096,stroke-dasharray: 3 3;
+  classDef done fill:#14532d,stroke:#86efac,color:#f0fdf4;
+  classDef blocked fill:#7f1d1d,stroke:#fca5a5,color:#fff7f7;
+  classDef inprogress fill:#78350f,stroke:#fbbf24,color:#fffbeb;
+  classDef todo fill:#1e3a8a,stroke:#93c5fd,color:#eff6ff;
+  classDef empty fill:#374151,stroke:#d1d5db,color:#f9fafb,stroke-dasharray: 3 3;
   subgraph Stories
     S001["S-001 Login"]:::blocked
     S002["S-002 Sessions"]:::todo

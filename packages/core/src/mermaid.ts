@@ -25,11 +25,11 @@ const STATUS_CLASS_BY_STATUS: Record<EffectiveStatus, string> = {
  * rule that dependency edges are same-type relationships rather than visual state transitions.
  */
 const STATUS_CLASS_DEFINITIONS: Array<[string, string]> = [
-  ["done", "fill:#c6f6d5,stroke:#22543d;"],
-  ["blocked", "fill:#fed7d7,stroke:#742a2a;"],
-  ["inprogress", "fill:#feebc8,stroke:#744210;"],
-  ["todo", "fill:#e2e8f0,stroke:#2d3748;"],
-  ["empty", "fill:#edf2f7,stroke:#718096,stroke-dasharray: 3 3;"]
+  ["done", "fill:#14532d,stroke:#86efac,color:#f0fdf4;"],
+  ["blocked", "fill:#7f1d1d,stroke:#fca5a5,color:#fff7f7;"],
+  ["inprogress", "fill:#78350f,stroke:#fbbf24,color:#fffbeb;"],
+  ["todo", "fill:#1e3a8a,stroke:#93c5fd,color:#eff6ff;"],
+  ["empty", "fill:#374151,stroke:#d1d5db,color:#f9fafb,stroke-dasharray: 3 3;"]
 ];
 
 /**
