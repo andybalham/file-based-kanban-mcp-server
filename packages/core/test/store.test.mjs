@@ -12,10 +12,12 @@ import {
   move,
   parse,
   readMarker,
+  resolveAll,
   scan,
   seedRequirements,
   serializeEntity,
   write,
+  writeGeneratedArtifacts,
   writeMarker
 } from "../dist/index.js";
 
@@ -408,6 +410,56 @@ test("seedRequirements writes once and preserves later human-authored content", 
   await seedRequirements(root, "# Replacement intent");
 
   assert.equal(await fs.readFile(sourcePath, "utf8"), "# Initial intent\n");
+});
+
+test("writeGeneratedArtifacts persists the deterministic navigation and graph artifact set", async () => {
+  const projectRoot = await copyFixtureProject();
+  const index = await scan(projectRoot);
+  const artifacts = await writeGeneratedArtifacts(projectRoot, index, resolveAll(index));
+
+  assert.deepEqual(
+    artifacts.map((artifact) => [artifact.kind, path.relative(projectRoot, artifact.filePath)]),
+    [
+      ["index", path.join(".worktracker", "index", "INDEX.md")],
+      ["index", path.join(".worktracker", "index", "E-001.md")],
+      ["index", path.join(".worktracker", "index", "READY.md")],
+      ["index", path.join(".worktracker", "index", "BLOCKED.md")],
+      ["graph", path.join(".worktracker", "graphs", "dependencies.mmd")],
+      ["graph", path.join(".worktracker", "graphs", "E-001.mmd")]
+    ]
+  );
+
+  assert.match(
+    await fs.readFile(path.join(projectRoot, ".worktracker", "index", "INDEX.md"), "utf8"),
+    /## \[E-001 · Project foundation\]\(\.\/E-001\.md\)/
+  );
+  assert.match(
+    await fs.readFile(path.join(projectRoot, ".worktracker", "index", "READY.md"), "utf8"),
+    /\[T-002 · Render board\]\(\.\.\/entities\/T-002-render-board\.md\)/
+  );
+  assert.match(
+    await fs.readFile(path.join(projectRoot, ".worktracker", "graphs", "dependencies.mmd"), "utf8"),
+    /subgraph Tasks[\s\S]*T001 --> T002/
+  );
+});
+
+test("bound store generated artifact writes skip byte-identical regeneration", async () => {
+  const projectRoot = await copyFixtureProject();
+  const store = createStore(projectRoot);
+  const index = await store.scan();
+  const artifacts = await store.writeGeneratedArtifacts(index, resolveAll(index));
+  const oldTimestamp = new Date("2026-06-01T00:00:00Z");
+
+  for (const artifact of artifacts) {
+    await fs.utimes(artifact.filePath, oldTimestamp, oldTimestamp);
+  }
+
+  await store.writeGeneratedArtifacts(index, resolveAll(index));
+
+  for (const artifact of artifacts) {
+    const stat = await fs.stat(artifact.filePath);
+    assert.equal(stat.mtime.getTime(), oldTimestamp.getTime());
+  }
 });
 
 test("discoverProjects finds markers under watch roots in deterministic root order", async () => {

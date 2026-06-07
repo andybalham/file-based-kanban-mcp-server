@@ -29,9 +29,10 @@ export {
   seedRequirements,
   serializeEntity,
   write,
+  writeGeneratedArtifacts,
   writeMarker
 } from "./store.js";
-export type { DiscoveredProject, Store } from "./store.js";
+export type { DiscoveredProject, GeneratedArtifact, Store } from "./store.js";
 export {
   blocked,
   buildDepGraph,

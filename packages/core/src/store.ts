@@ -2,7 +2,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
 
-import type { Entity, EntityId, EntityType, Index, ProjectMarker, StoredStatus } from "./types.js";
+import { renderDependencies, renderEpicSubgraph } from "./mermaid.js";
+import { renderBlocked, renderEpicIndex, renderIndex, renderReady } from "./nav.js";
+import type { EffectiveStatus, Entity, EntityId, EntityType, Index, ProjectMarker, StoredStatus } from "./types.js";
 
 /**
  * Root-relative directory that contains all human-authored entity Markdown files.
@@ -11,6 +13,22 @@ import type { Entity, EntityId, EntityType, Index, ProjectMarker, StoredStatus }
  * matching the technical design's storage model.
  */
 const ENTITIES_DIR = path.join(".worktracker", "entities");
+
+/**
+ * Root-relative directory for generated Markdown navigation files.
+ *
+ * These files are derived from frontmatter and status resolution, are safe to commit, and must be
+ * rewritten only when their rendered bytes actually change.
+ */
+const GENERATED_INDEX_DIR = path.join(".worktracker", "index");
+
+/**
+ * Root-relative directory for generated Mermaid graph files.
+ *
+ * Mermaid output is kept separate from Markdown navigation so MCP resources and the viewer can read
+ * the exact artifact family they need without mixing generated formats.
+ */
+const GENERATED_GRAPHS_DIR = path.join(".worktracker", "graphs");
 
 /**
  * Root-relative path to the authoritative project marker.
@@ -94,6 +112,19 @@ export interface DiscoveredProject {
   root: string;
   /** Parsed marker content used by the server registry to rebuild project state. */
   marker: ProjectMarker;
+}
+
+/**
+ * Description of one generated artifact produced by the deterministic regeneration primitive.
+ *
+ * Returning these paths gives server orchestration and tests a precise list of files that belong to
+ * the latest generation pass without exposing write internals or filesystem timestamps.
+ */
+export interface GeneratedArtifact {
+  /** Stable artifact family used by future MCP resources and HTTP routes to select the file. */
+  kind: "index" | "graph";
+  /** Absolute path to the generated file inside the owning project's `.worktracker` subtree. */
+  filePath: string;
 }
 
 /**
@@ -215,6 +246,14 @@ export interface Store {
    * Write `.worktracker/requirements/source.md` once and preserve any existing human-authored file.
    */
   seedRequirements(intent: string): Promise<void>;
+
+  /**
+   * Render and atomically persist all generated navigation and graph artifacts for this project.
+   *
+   * The caller provides the already-resolved effective status map so this primitive stays a pure
+   * filesystem commit step and does not decide graph semantics itself.
+   */
+  writeGeneratedArtifacts(index: Index, eff: Map<EntityId, EffectiveStatus>): Promise<GeneratedArtifact[]>;
 }
 
 /**
@@ -233,7 +272,8 @@ export function createStore(root: string): Store {
     move: (id, newParent) => move(root, id, newParent),
     readMarker: () => readMarker(root),
     writeMarker: (marker) => writeMarker(root, marker),
-    seedRequirements: (intent) => seedRequirements(root, intent)
+    seedRequirements: (intent) => seedRequirements(root, intent),
+    writeGeneratedArtifacts: (index, eff) => writeGeneratedArtifacts(root, index, eff)
   };
 }
 
@@ -488,6 +528,118 @@ export async function seedRequirements(root: string, intent: string): Promise<vo
   }
 
   await atomicWriteFile(requirementsPath, intent.endsWith("\n") ? intent : `${intent}\n`);
+}
+
+/**
+ * Render and write the complete Phase 3 generated artifact set.
+ *
+ * The file list mirrors §8 of the technical design: top-level board Markdown, per-epic Markdown,
+ * ready and blocked lists, the full dependency Mermaid graph, and one Mermaid graph per active
+ * epic. Entity Markdown bodies, project markers, requirements, and counters are intentionally
+ * outside this regeneration set.
+ */
+export async function writeGeneratedArtifacts(
+  root: string,
+  index: Index,
+  eff: Map<EntityId, EffectiveStatus>
+): Promise<GeneratedArtifact[]> {
+  const artifacts = generatedArtifactContents(root, index, eff);
+
+  for (const artifact of artifacts) {
+    await writeGeneratedTextFileIfChanged(artifact.filePath, artifact.content);
+  }
+
+  return artifacts.map(({ kind, filePath }) => ({ kind, filePath }));
+}
+
+/**
+ * Build generated artifact contents in the deterministic write order used by regeneration.
+ *
+ * The top-level board is written first, followed by per-epic drilldowns, query lists, the full
+ * graph, and per-epic graphs. Active epics are sorted by id so repeated generation produces the
+ * same file order regardless of Map insertion order.
+ */
+function generatedArtifactContents(
+  root: string,
+  index: Index,
+  eff: Map<EntityId, EffectiveStatus>
+): Array<GeneratedArtifact & { content: string }> {
+  const indexDirectory = path.join(root, GENERATED_INDEX_DIR);
+  const graphsDirectory = path.join(root, GENERATED_GRAPHS_DIR);
+  const activeEpics = activeEpicsForGeneration(index);
+  const artifacts: Array<GeneratedArtifact & { content: string }> = [
+    {
+      kind: "index",
+      filePath: path.join(indexDirectory, "INDEX.md"),
+      content: renderIndex(index, eff)
+    }
+  ];
+
+  for (const epic of activeEpics) {
+    artifacts.push({
+      kind: "index",
+      filePath: path.join(indexDirectory, `${epic.id}.md`),
+      content: renderEpicIndex(index, epic.id, eff)
+    });
+  }
+
+  artifacts.push(
+    {
+      kind: "index",
+      filePath: path.join(indexDirectory, "READY.md"),
+      content: renderReady(index, eff)
+    },
+    {
+      kind: "index",
+      filePath: path.join(indexDirectory, "BLOCKED.md"),
+      content: renderBlocked(index, eff)
+    },
+    {
+      kind: "graph",
+      filePath: path.join(graphsDirectory, "dependencies.mmd"),
+      content: renderDependencies(index, eff)
+    }
+  );
+
+  for (const epic of activeEpics) {
+    artifacts.push({
+      kind: "graph",
+      filePath: path.join(graphsDirectory, `${epic.id}.mmd`),
+      content: renderEpicSubgraph(index, epic.id, eff)
+    });
+  }
+
+  return artifacts;
+}
+
+/**
+ * Return active epics in id order for per-epic generated Markdown and Mermaid files.
+ */
+function activeEpicsForGeneration(index: Index): Entity[] {
+  return [...index.byId.values()]
+    .filter((entity) => entity.type === "epic" && !entity.archived)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Atomically write generated text unless the existing file already has identical bytes.
+ *
+ * This preserves the design's idempotency guarantee at the filesystem level: a semantic no-op
+ * regeneration produces no timestamp-only diff and avoids confusing later watcher suppression.
+ */
+async function writeGeneratedTextFileIfChanged(filePath: string, content: string): Promise<void> {
+  try {
+    const existing = await fs.readFile(filePath, "utf8");
+    if (existing === content) {
+      return;
+    }
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  await atomicWriteFile(filePath, content);
 }
 
 /**
