@@ -59,6 +59,38 @@ async function assertGeneratedArtifactsMatchGolden(projectRoot, artifacts) {
   }
 }
 
+async function readGenerated(projectRoot, relativePath) {
+  return fs.readFile(path.join(projectRoot, ".worktracker", relativePath), "utf8");
+}
+
+async function assertMarkdownLinksResolve(projectRoot, relativePath) {
+  const filePath = path.join(projectRoot, ".worktracker", relativePath);
+  const content = await fs.readFile(filePath, "utf8");
+  const linkPattern = /\[[^\]]+\]\((\.\.\/entities\/[^)]+)\)/g;
+  const links = [...content.matchAll(linkPattern)].map((match) => match[1]);
+
+  assert.notEqual(links.length, 0, `${relativePath} should contain entity links`);
+
+  for (const link of links) {
+    const linkedPath = path.resolve(path.dirname(filePath), link);
+    assert.equal(await pathExists(linkedPath), true, `${relativePath} link ${link} should resolve`);
+  }
+}
+
+async function assertMermaidClickLinksResolve(projectRoot, relativePath) {
+  const filePath = path.join(projectRoot, ".worktracker", relativePath);
+  const content = await fs.readFile(filePath, "utf8");
+  const clickPattern = /^\s*click\s+\S+\s+"([^"]+)"/gm;
+  const links = [...content.matchAll(clickPattern)].map((match) => match[1]);
+
+  assert.notEqual(links.length, 0, `${relativePath} should contain Mermaid click links`);
+
+  for (const link of links) {
+    const linkedPath = path.resolve(path.dirname(filePath), link);
+    assert.equal(await pathExists(linkedPath), true, `${relativePath} click ${link} should resolve`);
+  }
+}
+
 test("parse reads frontmatter into the stable Entity shape and preserves Markdown body", async () => {
   const entity = await parse(path.join(entitiesRoot, "T-002-render-board.md"));
 
@@ -463,6 +495,126 @@ test("bound store generated artifact writes skip byte-identical regeneration", a
     const stat = await fs.stat(artifact.filePath);
     assert.equal(stat.mtime.getTime(), oldTimestamp.getTime());
   }
+});
+
+test("writeGeneratedArtifacts produces deterministic navigation and graph outputs", async () => {
+  const projectRoot = await copyFixtureProject();
+  const store = createStore(projectRoot);
+  const index = await store.scan();
+  const artifacts = await store.writeGeneratedArtifacts(index, resolveAll(index));
+
+  assert.deepEqual(
+    artifacts.map((artifact) => path.relative(projectRoot, artifact.filePath)),
+    [
+      path.join(".worktracker", "index", "INDEX.md"),
+      path.join(".worktracker", "index", "E-001.md"),
+      path.join(".worktracker", "index", "READY.md"),
+      path.join(".worktracker", "index", "BLOCKED.md"),
+      path.join(".worktracker", "graphs", "dependencies.mmd"),
+      path.join(".worktracker", "graphs", "E-001.mmd")
+    ]
+  );
+
+  await assertGeneratedArtifactsMatchGolden(projectRoot, artifacts);
+  await assertMarkdownLinksResolve(projectRoot, path.join("index", "INDEX.md"));
+  await assertMarkdownLinksResolve(projectRoot, path.join("index", "READY.md"));
+  await assertMermaidClickLinksResolve(projectRoot, path.join("graphs", "dependencies.mmd"));
+  await assertMermaidClickLinksResolve(projectRoot, path.join("graphs", "E-001.mmd"));
+
+  const dependencies = await readGenerated(projectRoot, path.join("graphs", "dependencies.mmd"));
+  assert.match(dependencies, /subgraph Epics[\s\S]*E001\["E-001 Project foundation"\]:::inprogress[\s\S]*end/);
+  assert.match(dependencies, /subgraph Stories[\s\S]*S001\["S-001 Initial board"\]:::inprogress[\s\S]*end/);
+  assert.match(dependencies, /subgraph Tasks[\s\S]*T001\["T-001 Create project marker"\]:::done[\s\S]*T002\["T-002 Render board"\]:::todo[\s\S]*T001 --> T002[\s\S]*end/);
+
+  const beforeRegeneration = new Map();
+  for (const artifact of artifacts) {
+    beforeRegeneration.set(artifact.filePath, await fs.readFile(artifact.filePath, "utf8"));
+  }
+
+  await store.writeGeneratedArtifacts(index, resolveAll(index));
+
+  for (const artifact of artifacts) {
+    assert.equal(await fs.readFile(artifact.filePath, "utf8"), beforeRegeneration.get(artifact.filePath));
+  }
+
+  const blockedProjectRoot = await copyFixtureProject();
+  const blockedStore = createStore(blockedProjectRoot);
+  const originalEpic = await blockedStore.parse(
+    path.join(blockedProjectRoot, ".worktracker", "entities", "E-001-project-foundation.md")
+  );
+  const originalStory = await blockedStore.parse(
+    path.join(blockedProjectRoot, ".worktracker", "entities", "S-001-initial-board.md")
+  );
+  const originalTask = await blockedStore.parse(
+    path.join(blockedProjectRoot, ".worktracker", "entities", "T-002-render-board.md")
+  );
+
+  await blockedStore.write({
+    ...originalEpic,
+    dependsOn: ["E-002"]
+  });
+  await blockedStore.write({
+    ...originalStory,
+    dependsOn: ["S-002"]
+  });
+  await blockedStore.write({
+    ...originalTask,
+    dependsOn: ["T-001", "T-003"]
+  });
+  await blockedStore.write({
+    id: "E-002",
+    type: "epic",
+    title: "Dependency foundation",
+    parent: null,
+    status: "todo",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-06T21:00:00Z",
+    updated: "2026-06-06T21:00:00Z",
+    body: "\nProvides the upstream epic dependency.\n",
+    filePath: path.join(blockedProjectRoot, ".worktracker", "entities", "E-002-dependency-foundation.md")
+  });
+  await blockedStore.write({
+    id: "S-002",
+    type: "story",
+    title: "Dependency board",
+    parent: "E-002",
+    status: "todo",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-06T21:01:00Z",
+    updated: "2026-06-06T21:01:00Z",
+    body: "\nProvides the upstream story dependency.\n",
+    filePath: path.join(blockedProjectRoot, ".worktracker", "entities", "S-002-dependency-board.md")
+  });
+  await blockedStore.write({
+    id: "T-003",
+    type: "task",
+    title: "Dependency task",
+    parent: "S-002",
+    status: "todo",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-06T21:02:00Z",
+    updated: "2026-06-06T21:02:00Z",
+    body: "\nProvides the upstream task dependency.\n",
+    filePath: path.join(blockedProjectRoot, ".worktracker", "entities", "T-003-dependency-task.md")
+  });
+
+  const blockedIndex = await blockedStore.scan();
+  await blockedStore.writeGeneratedArtifacts(blockedIndex, resolveAll(blockedIndex));
+
+  assert.equal(await readGenerated(blockedProjectRoot, path.join("index", "BLOCKED.md")), `# Blocked work
+
+_Generated. Do not edit by hand._
+
+- [E-001 · Project foundation](../entities/E-001-project-foundation.md) — blocked · waiting on E-002
+- [S-001 · Initial board](../entities/S-001-initial-board.md) — blocked · waiting on S-002
+- [T-002 · Render board](../entities/T-002-render-board.md) — blocked · waiting on T-003
+`);
 });
 
 test("discoverProjects finds markers under watch roots in deterministic root order", async () => {
