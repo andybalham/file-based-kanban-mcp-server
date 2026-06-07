@@ -32,3 +32,5 @@ export {
   writeMarker
 } from "./store.js";
 export type { DiscoveredProject, Store } from "./store.js";
+export { buildDepGraph, detectDepCycle, detectHierarchyCycle, topoSort } from "./graph.js";
+export type { DepGraph } from "./graph.js";
