@@ -12,6 +12,7 @@ import {
   MCP_TOOL_NAMES,
   McpAdapterError,
   RegistryError,
+  createProjectRegistry,
   executeMcpMutationTool,
   executeMcpQueryTool,
   isMcpErrorCode,
@@ -585,6 +586,182 @@ test("executeMcpMutationTool rejects invalid proposals before touching the store
   await assert.rejects(() => fs.access(path.join(root, ".worktracker", ".meta", "counters.json")));
 });
 
+test("MCP integration reaches every structured error code through the public tool boundary", async () => {
+  const expectations = [
+    {
+      code: "NOT_FOUND",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-not-found-");
+        await executeMcpMutationTool(registry, "set_status", { projectId: "wt_mutation", id: "T-404", status: "done" });
+      }
+    },
+    {
+      code: "INVALID_PARENT_TYPE",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-parent-type-");
+        await executeMcpMutationTool(registry, "move_entity", { projectId: "wt_mutation", id: "T-001", newParent: "E-001" });
+      }
+    },
+    {
+      code: "PARENT_REQUIRED",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-parent-required-");
+        await executeMcpMutationTool(registry, "create_entity", { projectId: "wt_mutation", type: "story", title: "No parent" });
+      }
+    },
+    {
+      code: "EPIC_HAS_PARENT",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-epic-parent-");
+        await executeMcpMutationTool(registry, "create_entity", {
+          projectId: "wt_mutation",
+          type: "epic",
+          title: "Parented epic",
+          parent: "E-001"
+        });
+      }
+    },
+    {
+      code: "NOT_A_TASK",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-not-task-");
+        await executeMcpMutationTool(registry, "set_status", { projectId: "wt_mutation", id: "S-001", status: "done" });
+      }
+    },
+    {
+      code: "DEP_NOT_FOUND",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-dep-missing-");
+        await executeMcpMutationTool(registry, "create_entity", {
+          projectId: "wt_mutation",
+          type: "task",
+          title: "Missing dependency",
+          parent: "S-001",
+          dependsOn: ["T-404"]
+        });
+      }
+    },
+    {
+      code: "DEP_TYPE_MISMATCH",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-dep-type-");
+        await executeMcpMutationTool(registry, "link_dependency", { projectId: "wt_mutation", from: "T-001", to: "S-001" });
+      }
+    },
+    {
+      code: "DEP_CYCLE",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-dep-cycle-");
+        await executeMcpMutationTool(
+          registry,
+          "create_entity",
+          { projectId: "wt_mutation", type: "task", title: "Second task", parent: "S-001", dependsOn: ["T-001"] },
+          { now: fixedNow }
+        );
+        await executeMcpMutationTool(registry, "link_dependency", { projectId: "wt_mutation", from: "T-001", to: "T-002" });
+      }
+    },
+    {
+      code: "HIERARCHY_CYCLE",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-hierarchy-cycle-");
+        await executeMcpMutationTool(registry, "move_entity", { projectId: "wt_mutation", id: "S-001", newParent: "T-001" });
+      }
+    },
+    {
+      code: "SELF_DEPENDENCY",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-self-dep-");
+        await executeMcpMutationTool(registry, "link_dependency", { projectId: "wt_mutation", from: "T-001", to: "T-001" });
+      }
+    },
+    {
+      code: "DUPLICATE_DEPENDENCY",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-dup-dep-");
+        await executeMcpMutationTool(registry, "create_entity", {
+          projectId: "wt_mutation",
+          type: "task",
+          title: "Second task",
+          parent: "S-001"
+        });
+        await executeMcpMutationTool(registry, "link_dependency", { projectId: "wt_mutation", from: "T-002", to: "T-001" });
+        await executeMcpMutationTool(registry, "link_dependency", { projectId: "wt_mutation", from: "T-002", to: "T-001" });
+      }
+    },
+    {
+      code: "NOT_LINKED",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-not-linked-");
+        await executeMcpMutationTool(registry, "create_entity", {
+          projectId: "wt_mutation",
+          type: "task",
+          title: "Second task",
+          parent: "S-001"
+        });
+        await executeMcpMutationTool(registry, "unlink_dependency", { projectId: "wt_mutation", from: "T-002", to: "T-001" });
+      }
+    },
+    {
+      code: "IMMUTABLE_FIELD",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-immutable-");
+        await executeMcpMutationTool(registry, "update_entity", {
+          projectId: "wt_mutation",
+          id: "T-001",
+          fields: { status: "done" }
+        });
+      }
+    },
+    {
+      code: "INVALID_STATUS",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-status-");
+        await executeMcpMutationTool(registry, "set_status", { projectId: "wt_mutation", id: "T-001", status: "blocked" });
+      }
+    },
+    {
+      code: "AMBIGUOUS_PROJECT",
+      run: async () => {
+        const registry = resourceRegistry([
+          mutationProjectState(path.join(os.tmpdir(), "file-kanban-mcp-error-ambiguous-one")),
+          { ...mutationProjectState(path.join(os.tmpdir(), "file-kanban-mcp-error-ambiguous-two")), projectId: "wt_second" }
+        ]);
+        executeMcpQueryTool(registry, "validate", {});
+      }
+    },
+    {
+      code: "PROJECT_NOT_FOUND",
+      run: async () => {
+        const { registry } = await mutationFixture("file-kanban-mcp-error-project-missing-");
+        executeMcpQueryTool(registry, "validate", { projectId: "wt_missing" });
+      }
+    },
+    {
+      code: "NOT_A_PROJECT",
+      run: async () => {
+        const root = await makeTempRoot("file-kanban-mcp-error-not-project-");
+        await writeText(root, path.join(".worktracker", "project.json"), JSON.stringify({ projectId: "wt_bad" }, null, 2));
+        const registry = createProjectRegistry({ watchRoots: [root] });
+        await registry.init({ root, title: "Ignored title" });
+      }
+    }
+  ];
+
+  assert.deepEqual(expectations.map((expectation) => expectation.code).sort(), [...MCP_ERROR_CODES].sort());
+
+  for (const expectation of expectations) {
+    await assert.rejects(
+      expectation.run,
+      (error) => {
+        assert.equal(toMcpStructuredError(error).code, expectation.code);
+        return true;
+      },
+      expectation.code
+    );
+  }
+});
+
 test("MCP error code registry includes every structured design error", () => {
   assert.deepEqual(MCP_ERROR_CODES, [
     "NOT_FOUND",
@@ -824,6 +1001,17 @@ function mutationProjectState(root) {
       [story.id, "todo"],
       [task.id, "todo"]
     ])
+  };
+}
+
+async function mutationFixture(prefix) {
+  const root = await makeTempRoot(prefix);
+  const state = mutationProjectState(root);
+  await seedEntityFiles(root, state);
+  return {
+    root,
+    state,
+    registry: resourceRegistry([state])
   };
 }
 

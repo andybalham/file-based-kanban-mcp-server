@@ -717,6 +717,10 @@ export function toMcpStructuredError(error: unknown): McpStructuredError {
     return withOptionalDetails(error.code, error.message, error.projectId === undefined ? undefined : { projectId: error.projectId });
   }
 
+  if (isProjectMarkerParseError(error)) {
+    return { code: "NOT_A_PROJECT", message: error.message };
+  }
+
   if (isNamedCoreLookupError(error)) {
     return { code: "NOT_FOUND", message: error.message };
   }
@@ -1413,10 +1417,14 @@ function withOptionalDetails(code: McpErrorCode, message: string, details: unkno
  * Identify current core store lookup errors without coupling MCP contracts to private core classes.
  */
 function isNamedCoreLookupError(error: unknown): error is Error {
-  return (
-    error instanceof Error &&
-    (error.name === "EntityMoveError" || error.name === "EntityParseError" || error.name === "ProjectMarkerParseError")
-  );
+  return error instanceof Error && (error.name === "EntityMoveError" || error.name === "EntityParseError");
+}
+
+/**
+ * Identify malformed project marker errors so MCP can expose the design's `NOT_A_PROJECT` code.
+ */
+function isProjectMarkerParseError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "ProjectMarkerParseError";
 }
 
 /**
