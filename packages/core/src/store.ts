@@ -125,6 +125,14 @@ export interface GeneratedArtifact {
   kind: "index" | "graph";
   /** Absolute path to the generated file inside the owning project's `.worktracker` subtree. */
   filePath: string;
+  /**
+   * Whether this generation pass replaced the file bytes.
+   *
+   * Server mutation results use this flag to tell agents and humans which generated artifacts
+   * actually need to be included in a user-controlled commit, while still returning the complete
+   * artifact set for resource and watcher bookkeeping.
+   */
+  changed: boolean;
 }
 
 /**
@@ -209,7 +217,7 @@ export interface Store {
    * this project's entity directory, serializes deterministically, and suppresses byte-identical
    * writes so `updated` timestamps do not churn on no-op mutations.
    */
-  write(entity: Entity): Promise<void>;
+  write(entity: Entity): Promise<boolean>;
 
   /**
    * Reserve and return the next id for one entity type.
@@ -401,14 +409,14 @@ export function serializeEntity(entity: Entity): string {
  * never derives or edits Markdown content. The on-disk comparison happens before opening a temp
  * file so semantic no-ops leave timestamps and filesystem watcher state untouched.
  */
-export async function write(root: string, entity: Entity): Promise<void> {
+export async function write(root: string, entity: Entity): Promise<boolean> {
   const filePath = resolveEntityWritePath(root, entity.filePath);
   const serialized = serializeEntity({ ...entity, filePath });
 
   try {
     const existing = await fs.readFile(filePath, "utf8");
     if (existing === serialized) {
-      return;
+      return false;
     }
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") {
@@ -417,6 +425,7 @@ export async function write(root: string, entity: Entity): Promise<void> {
   }
 
   await atomicWriteFile(filePath, serialized);
+  return true;
 }
 
 /**
@@ -544,12 +553,17 @@ export async function writeGeneratedArtifacts(
   eff: Map<EntityId, EffectiveStatus>
 ): Promise<GeneratedArtifact[]> {
   const artifacts = generatedArtifactContents(root, index, eff);
+  const writtenArtifacts: GeneratedArtifact[] = [];
 
   for (const artifact of artifacts) {
-    await writeGeneratedTextFileIfChanged(artifact.filePath, artifact.content);
+    writtenArtifacts.push({
+      kind: artifact.kind,
+      filePath: artifact.filePath,
+      changed: await writeGeneratedTextFileIfChanged(artifact.filePath, artifact.content)
+    });
   }
 
-  return artifacts.map(({ kind, filePath }) => ({ kind, filePath }));
+  return writtenArtifacts;
 }
 
 /**
@@ -563,11 +577,11 @@ function generatedArtifactContents(
   root: string,
   index: Index,
   eff: Map<EntityId, EffectiveStatus>
-): Array<GeneratedArtifact & { content: string }> {
+): Array<Omit<GeneratedArtifact, "changed"> & { content: string }> {
   const indexDirectory = path.join(root, GENERATED_INDEX_DIR);
   const graphsDirectory = path.join(root, GENERATED_GRAPHS_DIR);
   const activeEpics = activeEpicsForGeneration(index);
-  const artifacts: Array<GeneratedArtifact & { content: string }> = [
+  const artifacts: Array<Omit<GeneratedArtifact, "changed"> & { content: string }> = [
     {
       kind: "index",
       filePath: path.join(indexDirectory, "INDEX.md"),
@@ -627,11 +641,11 @@ function activeEpicsForGeneration(index: Index): Entity[] {
  * This preserves the design's idempotency guarantee at the filesystem level: a semantic no-op
  * regeneration produces no timestamp-only diff and avoids confusing later watcher suppression.
  */
-async function writeGeneratedTextFileIfChanged(filePath: string, content: string): Promise<void> {
+async function writeGeneratedTextFileIfChanged(filePath: string, content: string): Promise<boolean> {
   try {
     const existing = await fs.readFile(filePath, "utf8");
     if (existing === content) {
-      return;
+      return false;
     }
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") {
@@ -640,6 +654,7 @@ async function writeGeneratedTextFileIfChanged(filePath: string, content: string
   }
 
   await atomicWriteFile(filePath, content);
+  return true;
 }
 
 /**

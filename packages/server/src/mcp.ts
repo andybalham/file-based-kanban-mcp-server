@@ -15,8 +15,12 @@ import type {
 import { allocateId, blocked, criticalPath, ready, resolveDetailed, validate, write } from "@file-kanban/core";
 
 import { regenerateProject } from "./regenerate.js";
+import type { RegenerationResult } from "./regenerate.js";
 import { RegistryError } from "./registry.js";
 import type { RegisteredProject } from "./registry.js";
+
+/** Project-relative path to the durable id counters touched by `create_entity`. */
+const COUNTERS_RELATIVE_PATH = path.join(".worktracker", ".meta", "counters.json");
 
 /**
  * Resource URI templates exposed by the MCP adapter.
@@ -227,6 +231,8 @@ export interface CreateEntityToolArgs extends ProjectScopedToolArgs {
 export interface EntityIdToolResult {
   /** Entity id affected by the operation. */
   id: EntityId;
+  /** Project-relative files whose bytes changed and should be considered for a manual commit. */
+  changedFiles: string[];
 }
 
 /** Mutatable fields accepted by `update_entity`. */
@@ -277,6 +283,8 @@ export interface DependencyToolResult {
   from: EntityId;
   /** Entity depended on by `from`. */
   to: EntityId;
+  /** Project-relative files whose bytes changed and should be considered for a manual commit. */
+  changedFiles: string[];
 }
 
 /** Arguments accepted by `move_entity`. */
@@ -487,49 +495,49 @@ export const MCP_TOOL_DEFINITIONS: { [Name in McpToolName]: McpToolDefinition<Na
     name: "create_entity",
     description: "Create an epic, story, or task with project-local ids and same-type dependencies.",
     inputFields: ["projectId", "type", "title", "parent", "dependsOn", "estimate", "tags", "body"],
-    resultFields: ["id"],
+    resultFields: ["id", "changedFiles"],
     mutates: true
   },
   update_entity: {
     name: "update_entity",
     description: "Update mutable entity fields while preserving immutable identity and relationship fields.",
     inputFields: ["projectId", "id", "fields"],
-    resultFields: ["id"],
+    resultFields: ["id", "changedFiles"],
     mutates: true
   },
   set_status: {
     name: "set_status",
     description: "Set the stored status for a task and return its recomputed effective status.",
     inputFields: ["projectId", "id", "status"],
-    resultFields: ["id", "effectiveStatus"],
+    resultFields: ["id", "effectiveStatus", "changedFiles"],
     mutates: true
   },
   link_dependency: {
     name: "link_dependency",
     description: "Create a same-type dependency edge inside one selected project.",
     inputFields: ["projectId", "from", "to"],
-    resultFields: ["from", "to"],
+    resultFields: ["from", "to", "changedFiles"],
     mutates: true
   },
   unlink_dependency: {
     name: "unlink_dependency",
     description: "Remove an existing same-type dependency edge inside one selected project.",
     inputFields: ["projectId", "from", "to"],
-    resultFields: ["from", "to"],
+    resultFields: ["from", "to", "changedFiles"],
     mutates: true
   },
   move_entity: {
     name: "move_entity",
     description: "Change an entity parent while preserving hierarchy invariants.",
     inputFields: ["projectId", "id", "newParent"],
-    resultFields: ["id"],
+    resultFields: ["id", "changedFiles"],
     mutates: true
   },
   archive_entity: {
     name: "archive_entity",
     description: "Soft-delete an entity by marking it archived.",
     inputFields: ["projectId", "id"],
-    resultFields: ["id"],
+    resultFields: ["id", "changedFiles"],
     mutates: true
   },
   query_ready: {
@@ -890,6 +898,7 @@ async function executeCreateEntity(
 
   assertValidProposal(proposedIndex(project.index, preliminaryEntity));
 
+  const countersBefore = await snapshotProjectFile(project.root, COUNTERS_RELATIVE_PATH);
   const id = await allocateId(project.root, args.type);
   const entity = {
     ...preliminaryEntity,
@@ -898,10 +907,11 @@ async function executeCreateEntity(
   };
 
   assertValidProposal(proposedIndex(project.index, entity));
-  await write(project.root, entity);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, entity, options, [
+    ...(await projectFileChangedSinceSnapshot(project.root, COUNTERS_RELATIVE_PATH, countersBefore) ? [COUNTERS_RELATIVE_PATH] : [])
+  ]);
 
-  return { id };
+  return { id, changedFiles };
 }
 
 /**
@@ -925,10 +935,9 @@ async function executeUpdateEntity(
   }, options);
 
   assertValidProposal(proposedIndex(project.index, next));
-  await write(project.root, next);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, next, options);
 
-  return { id: current.id };
+  return { id: current.id, changedFiles };
 }
 
 /**
@@ -952,10 +961,9 @@ async function executeSetStatus(
 
   const next = withUpdatedTimestampIfChanged(current, { ...current, status: args.status }, options);
   assertValidProposal(proposedIndex(project.index, next));
-  await write(project.root, next);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, next, options);
 
-  return { id: current.id, effectiveStatus: project.eff.get(current.id) ?? args.status };
+  return { id: current.id, effectiveStatus: project.eff.get(current.id) ?? args.status, changedFiles };
 }
 
 /**
@@ -981,10 +989,9 @@ async function executeLinkDependency(
   }, options);
 
   assertValidProposal(proposedIndex(project.index, next));
-  await write(project.root, next);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, next, options);
 
-  return { from: from.id, to: to.id };
+  return { from: from.id, to: to.id, changedFiles };
 }
 
 /**
@@ -1010,10 +1017,9 @@ async function executeUnlinkDependency(
   }, options);
 
   assertValidProposal(proposedIndex(project.index, next));
-  await write(project.root, next);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, next, options);
 
-  return { from: from.id, to: to.id };
+  return { from: from.id, to: to.id, changedFiles };
 }
 
 /**
@@ -1029,10 +1035,9 @@ async function executeMoveEntity(
   const next = withUpdatedTimestampIfChanged(current, { ...current, parent: args.newParent }, options);
 
   assertValidProposal(proposedIndex(project.index, next));
-  await write(project.root, next);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, next, options);
 
-  return { id: current.id };
+  return { id: current.id, changedFiles };
 }
 
 /**
@@ -1048,10 +1053,9 @@ async function executeArchiveEntity(
   const next = withUpdatedTimestampIfChanged(current, { ...current, archived: true }, options);
 
   assertValidProposal(proposedIndex(project.index, next));
-  await write(project.root, next);
-  await regenerateMutationProject(project, options);
+  const changedFiles = await writeEntityAndRegenerate(project, next, options);
 
-  return { id: current.id };
+  return { id: current.id, changedFiles };
 }
 
 /**
@@ -1221,8 +1225,65 @@ function sortedUniqueStrings(values: string[]): string[] {
 async function regenerateMutationProject(
   project: ProjectState,
   options: ExecuteMcpMutationToolOptions
-): Promise<void> {
-  await (options.regenerate ?? regenerateProject)(project);
+): Promise<RegenerationResult> {
+  return (options.regenerate ?? regenerateProject)(project);
+}
+
+/**
+ * Persist one accepted entity proposal, refresh generated artifacts, and return manual commit paths.
+ *
+ * The old auto-commit side effect is intentionally absent. Instead, the MCP result reports stable
+ * project-relative paths for the entity, id counter, and generated artifacts that actually changed,
+ * letting the caller decide whether and how to stage a git commit.
+ */
+async function writeEntityAndRegenerate(
+  project: ProjectState,
+  entity: Entity,
+  options: ExecuteMcpMutationToolOptions,
+  extraChangedFiles: string[] = []
+): Promise<string[]> {
+  const entityChanged = await write(project.root, entity);
+  const regeneration = await regenerateMutationProject(project, options);
+
+  return sortedUniqueStrings([
+    ...extraChangedFiles.map((filePath) => projectRelativePath(project.root, filePath)),
+    ...(entityChanged ? [projectRelativePath(project.root, entity.filePath)] : []),
+    ...regeneration.changedFiles
+  ]);
+}
+
+/**
+ * Read a file before a side effect whose lower-level primitive does not expose a write result.
+ *
+ * `create_entity` allocates ids through the core counter primitive. Capturing the prior bytes lets
+ * the adapter report the counter file only when the successful mutation changed that file.
+ */
+async function snapshotProjectFile(root: string, relativePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(path.join(root, relativePath), "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Compare a project file against a pre-mutation snapshot.
+ */
+async function projectFileChangedSinceSnapshot(root: string, relativePath: string, before: string | null): Promise<boolean> {
+  const after = await snapshotProjectFile(root, relativePath);
+  return before !== after;
+}
+
+/**
+ * Convert absolute or project-relative filesystem paths into POSIX-style paths for git staging.
+ */
+function projectRelativePath(root: string, filePath: string): string {
+  const relativePath = path.isAbsolute(filePath) ? path.relative(root, filePath) : filePath;
+  return relativePath.replaceAll(path.sep, "/");
 }
 
 /**

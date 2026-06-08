@@ -161,7 +161,7 @@ test("MCP tool definitions expose every design tool in deterministic order", () 
   assert.equal(MCP_TOOL_DEFINITIONS.list_projects.mutates, false);
   assert.equal(MCP_TOOL_DEFINITIONS.link_dependency.mutates, true);
   assert.deepEqual(MCP_TOOL_DEFINITIONS.link_dependency.inputFields, ["projectId", "from", "to"]);
-  assert.deepEqual(MCP_TOOL_DEFINITIONS.set_status.resultFields, ["id", "effectiveStatus"]);
+  assert.deepEqual(MCP_TOOL_DEFINITIONS.set_status.resultFields, ["id", "effectiveStatus", "changedFiles"]);
 });
 
 test("executeMcpQueryTool returns registered projects and validation results", () => {
@@ -261,7 +261,19 @@ test("executeMcpMutationTool creates an entity and regenerates selected project 
     { now: fixedNow }
   );
 
-  assert.deepEqual(result, { id: "S-002" });
+  assert.deepEqual(result, {
+    id: "S-002",
+    changedFiles: [
+      ".worktracker/.meta/counters.json",
+      ".worktracker/entities/S-002-created-from-mcp.md",
+      ".worktracker/graphs/dependencies.mmd",
+      ".worktracker/graphs/E-001.mmd",
+      ".worktracker/index/BLOCKED.md",
+      ".worktracker/index/E-001.md",
+      ".worktracker/index/INDEX.md",
+      ".worktracker/index/READY.md"
+    ]
+  });
   assert.equal(state.index.byId.get("S-002").title, "Created from MCP");
   assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "S-002-created-from-mcp.md"), "utf8"), /id: S-002/);
   assert.match(await fs.readFile(path.join(root, ".worktracker", "index", "INDEX.md"), "utf8"), /Created from MCP/);
@@ -273,8 +285,7 @@ test("executeMcpMutationTool updates fields, task status, parent, and archived f
   await seedEntityFiles(root, state);
   const registry = resourceRegistry([state]);
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const updateResult = await executeMcpMutationTool(
       registry,
       "update_entity",
       {
@@ -287,21 +298,21 @@ test("executeMcpMutationTool updates fields, task status, parent, and archived f
         }
       },
       { now: fixedNow }
-    ),
-    { id: "T-001" }
   );
+  assert.equal(updateResult.id, "T-001");
+  assert.equal(updateResult.changedFiles.includes(".worktracker/entities/T-001-task.md"), true);
   assert.equal(state.index.byId.get("T-001").title, "Updated task");
   assert.equal(state.index.byId.get("T-001").updated, "2026-06-07T12:00:00Z");
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const statusResult = await executeMcpMutationTool(
       registry,
       "set_status",
       { projectId: "wt_mutation", id: "T-001", status: "done" },
       { now: fixedNow }
-    ),
-    { id: "T-001", effectiveStatus: "done" }
   );
+  assert.equal(statusResult.id, "T-001");
+  assert.equal(statusResult.effectiveStatus, "done");
+  assert.equal(statusResult.changedFiles.includes(".worktracker/entities/T-001-task.md"), true);
 
   await executeMcpMutationTool(
     registry,
@@ -309,26 +320,24 @@ test("executeMcpMutationTool updates fields, task status, parent, and archived f
     { projectId: "wt_mutation", type: "story", title: "Second story", parent: "E-001" },
     { now: fixedNow }
   );
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const moveResult = await executeMcpMutationTool(
       registry,
       "move_entity",
       { projectId: "wt_mutation", id: "T-001", newParent: "S-002" },
       { now: fixedNow }
-    ),
-    { id: "T-001" }
   );
+  assert.equal(moveResult.id, "T-001");
+  assert.equal(moveResult.changedFiles.includes(".worktracker/entities/T-001-task.md"), true);
   assert.equal(state.index.byId.get("T-001").parent, "S-002");
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const archiveResult = await executeMcpMutationTool(
       registry,
       "archive_entity",
       { projectId: "wt_mutation", id: "T-001" },
       { now: fixedNow }
-    ),
-    { id: "T-001" }
   );
+  assert.equal(archiveResult.id, "T-001");
+  assert.equal(archiveResult.changedFiles.includes(".worktracker/entities/T-001-task.md"), true);
   assert.equal(state.index.byId.get("T-001").archived, true);
 });
 
@@ -352,49 +361,49 @@ test("executeMcpMutationTool links and unlinks dependencies for every entity typ
     { now: fixedNow }
   );
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const epicDependencyResult = await executeMcpMutationTool(
       registry,
       "link_dependency",
       { projectId: "wt_mutation", from: "E-002", to: "E-001" },
       { now: fixedNow }
-    ),
-    { from: "E-002", to: "E-001" }
   );
+  assert.equal(epicDependencyResult.from, "E-002");
+  assert.equal(epicDependencyResult.to, "E-001");
+  assert.equal(epicDependencyResult.changedFiles.includes(".worktracker/entities/E-002-second-epic.md"), true);
   assert.deepEqual(state.index.byId.get("E-002").dependsOn, ["E-001"]);
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const storyDependencyResult = await executeMcpMutationTool(
       registry,
       "link_dependency",
       { projectId: "wt_mutation", from: "S-002", to: "S-001" },
       { now: fixedNow }
-    ),
-    { from: "S-002", to: "S-001" }
   );
+  assert.equal(storyDependencyResult.from, "S-002");
+  assert.equal(storyDependencyResult.to, "S-001");
+  assert.equal(storyDependencyResult.changedFiles.includes(".worktracker/entities/S-002-second-story.md"), true);
   assert.deepEqual(state.index.byId.get("S-002").dependsOn, ["S-001"]);
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const taskDependencyResult = await executeMcpMutationTool(
       registry,
       "link_dependency",
       { projectId: "wt_mutation", from: "T-002", to: "T-001" },
       { now: fixedNow }
-    ),
-    { from: "T-002", to: "T-001" }
   );
+  assert.equal(taskDependencyResult.from, "T-002");
+  assert.equal(taskDependencyResult.to, "T-001");
+  assert.equal(taskDependencyResult.changedFiles.includes(".worktracker/entities/T-002-second-task.md"), true);
   assert.deepEqual(state.index.byId.get("T-002").dependsOn, ["T-001"]);
   assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "T-002-second-task.md"), "utf8"), /dependsOn: \[T-001\]/);
 
-  assert.deepEqual(
-    await executeMcpMutationTool(
+  const unlinkResult = await executeMcpMutationTool(
       registry,
       "unlink_dependency",
       { projectId: "wt_mutation", from: "T-002", to: "T-001" },
       { now: fixedNow }
-    ),
-    { from: "T-002", to: "T-001" }
   );
+  assert.equal(unlinkResult.from, "T-002");
+  assert.equal(unlinkResult.to, "T-001");
+  assert.equal(unlinkResult.changedFiles.includes(".worktracker/entities/T-002-second-task.md"), true);
   assert.deepEqual(state.index.byId.get("T-002").dependsOn, []);
   assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "T-002-second-task.md"), "utf8"), /dependsOn: \[\]/);
 });

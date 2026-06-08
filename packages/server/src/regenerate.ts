@@ -46,6 +46,8 @@ export interface RegenerationResult {
   eff: Map<EntityId, EffectiveStatus>;
   /** Deterministic artifact paths returned by the core writer. */
   artifacts: GeneratedArtifact[];
+  /** Project-relative generated artifact paths whose bytes changed during this regeneration run. */
+  changedFiles: string[];
   /** Absolute artifact paths recorded for future watcher write suppression. */
   suppressedPaths: string[];
 }
@@ -72,6 +74,7 @@ export async function regenerateProject(
 
   const artifacts = await writeGeneratedArtifacts(project.root, index, eff);
   const suppressedPaths = recordSuppressedArtifactPaths(project.root, artifacts, options.writeSuppressionSet);
+  const changedFiles = projectRelativeArtifactPaths(project.root, artifacts.filter((artifact) => artifact.changed));
 
   return {
     projectId: project.projectId,
@@ -79,6 +82,7 @@ export async function regenerateProject(
     index,
     eff,
     artifacts,
+    changedFiles,
     suppressedPaths
   };
 }
@@ -103,4 +107,16 @@ function recordSuppressedArtifactPaths(
   }
 
   return suppressedPaths;
+}
+
+/**
+ * Convert absolute generated artifact paths into deterministic project-relative git pathspecs.
+ *
+ * The regeneration pipeline owns project roots, so callers should not need to guess which generated
+ * artifacts changed or convert platform-specific separators before staging files manually.
+ */
+function projectRelativeArtifactPaths(root: string, artifacts: GeneratedArtifact[]): string[] {
+  return artifacts
+    .map((artifact) => path.relative(root, artifact.filePath).replaceAll(path.sep, "/"))
+    .sort((left, right) => left.localeCompare(right));
 }

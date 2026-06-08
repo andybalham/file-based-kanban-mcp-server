@@ -138,6 +138,14 @@ test("regenerateProject refreshes state, writes generated artifacts, and records
       ".worktracker/graphs/E-001.mmd"
     ]
   );
+  assert.deepEqual(result.changedFiles, [
+    ".worktracker/graphs/dependencies.mmd",
+    ".worktracker/graphs/E-001.mmd",
+    ".worktracker/index/BLOCKED.md",
+    ".worktracker/index/E-001.md",
+    ".worktracker/index/INDEX.md",
+    ".worktracker/index/READY.md"
+  ]);
   assert.equal(writeSuppressionSet.size, result.artifacts.length);
   assert.deepEqual([...writeSuppressionSet].sort(), [...result.suppressedPaths].sort());
   assert.match(await readText(path.join(root, ".worktracker", "index", "READY.md")), /T-001/);
@@ -166,5 +174,13 @@ test("regenerateProject can render from an already refreshed in-memory index", a
 
   assert.equal(result.index, index);
   assert.equal(state.eff.get("E-001"), "done");
+  assert.deepEqual(result.changedFiles, [
+    ".worktracker/graphs/dependencies.mmd",
+    ".worktracker/graphs/E-001.mmd",
+    ".worktracker/index/BLOCKED.md",
+    ".worktracker/index/E-001.md",
+    ".worktracker/index/INDEX.md",
+    ".worktracker/index/READY.md"
+  ]);
   assert.match(await readText(path.join(root, ".worktracker", "index", "INDEX.md")), /done/);
 });

@@ -474,6 +474,10 @@ test("writeGeneratedArtifacts persists the deterministic navigation and graph ar
       ["graph", path.join(".worktracker", "graphs", "E-001.mmd")]
     ]
   );
+  assert.deepEqual(
+    artifacts.map((artifact) => artifact.changed),
+    [true, true, true, true, true, true]
+  );
 
   await assertGeneratedArtifactsMatchGolden(projectRoot, artifacts);
 });
@@ -489,7 +493,11 @@ test("bound store generated artifact writes skip byte-identical regeneration", a
     await fs.utimes(artifact.filePath, oldTimestamp, oldTimestamp);
   }
 
-  await store.writeGeneratedArtifacts(index, resolveAll(index));
+  const noOpArtifacts = await store.writeGeneratedArtifacts(index, resolveAll(index));
+  assert.deepEqual(
+    noOpArtifacts.map((artifact) => artifact.changed),
+    [false, false, false, false, false, false]
+  );
 
   for (const artifact of artifacts) {
     const stat = await fs.stat(artifact.filePath);
