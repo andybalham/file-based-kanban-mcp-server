@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server as NodeHttpServer, ServerResponse } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 
 import type { EffectiveStatus, Entity, EntityId, EntityType, ProjectId, ProjectState } from "@file-kanban/core";
@@ -135,6 +136,19 @@ export interface HttpViewerRegistry {
 }
 
 /**
+ * Optional filesystem settings for the concrete viewer HTTP adapter.
+ */
+export interface CreateHttpRequestHandlerOptions {
+  /**
+   * Directory containing the Vite-built read-only React viewer.
+   *
+   * The default points at `packages/ui/dist` from the compiled server package, matching the
+   * workspace layout required by the technical design while still letting tests inject a temp tree.
+   */
+  staticRoot?: string;
+}
+
+/**
  * Minimal request handler shape used by Node's `http.createServer`.
  *
  * The implementation returns a promise so tests can await route logic directly if needed, while
@@ -185,7 +199,12 @@ export type HttpProjectsResponse = RegisteredProject[];
  * adapter. All project state and status computation still flows through the transport-neutral
  * helpers below, which keeps the public API contract testable without opening sockets.
  */
-export function createHttpRequestHandler(registry: HttpViewerRegistry): HttpRequestHandler {
+export function createHttpRequestHandler(
+  registry: HttpViewerRegistry,
+  options: CreateHttpRequestHandlerOptions = {}
+): HttpRequestHandler {
+  const staticRoot = path.resolve(options.staticRoot ?? defaultStaticRoot());
+
   return async (request, response) => {
     try {
       if (request.method !== "GET") {
@@ -199,10 +218,15 @@ export function createHttpRequestHandler(registry: HttpViewerRegistry): HttpRequ
       const route = parseHttpRoute(request);
 
       if (route === null) {
-        writeJson(response, 404, {
-          code: "NOT_FOUND",
-          message: "Viewer API route was not found."
-        });
+        if (isApiRequest(request)) {
+          writeJson(response, 404, {
+            code: "NOT_FOUND",
+            message: "Viewer API route was not found."
+          });
+          return;
+        }
+
+        await serveStaticViewerAsset(request, response, staticRoot);
         return;
       }
 
@@ -237,9 +261,13 @@ export function createHttpRequestHandler(registry: HttpViewerRegistry): HttpRequ
  * by sending `{ "subscribe": "<projectId>" }`; server-side producers call the attached broadcast
  * methods to deliver `changed` or `reload` messages only to clients for that project.
  */
-export function createHttpServer(registry: HttpViewerRegistry): HttpViewerServer {
+export function createHttpServer(
+  registry: HttpViewerRegistry,
+  options: CreateHttpRequestHandlerOptions = {}
+): HttpViewerServer {
+  const handler = createHttpRequestHandler(registry, options);
   const server = createServer((request, response) => {
-    createHttpRequestHandler(registry)(request, response).catch((error: unknown) => {
+    handler(request, response).catch((error: unknown) => {
       const { status, body } = toHttpErrorBody(error);
       writeJson(response, status, body);
     });
@@ -883,6 +911,127 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 /**
+ * Resolve the built UI output directory from the compiled server module location.
+ */
+function defaultStaticRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "ui", "dist");
+}
+
+/**
+ * Return whether a request path is intended for the JSON viewer API.
+ */
+function isApiRequest(request: IncomingMessage): boolean {
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
+/**
+ * Serve the Vite-built viewer shell or one of its static assets.
+ *
+ * Unknown extensionless routes fall back to `index.html` so the browser app can own client-side
+ * routing. Extension-bearing misses return a normal 404 to avoid disguising broken asset links.
+ */
+async function serveStaticViewerAsset(
+  request: IncomingMessage,
+  response: ServerResponse,
+  staticRoot: string
+): Promise<void> {
+  const requestedPath = staticRequestPath(request);
+  const assetPath = path.resolve(staticRoot, `.${requestedPath}`);
+
+  if (!isPathInside(staticRoot, assetPath)) {
+    writeText(response, 403, "Forbidden\n", "text/plain; charset=utf-8");
+    return;
+  }
+
+  const filePath = await existingStaticFilePath(staticRoot, assetPath, requestedPath);
+
+  if (filePath === null) {
+    writeText(response, 404, "Not found\n", "text/plain; charset=utf-8");
+    return;
+  }
+
+  const body = await fs.readFile(filePath);
+  writeBinary(response, 200, body, contentTypeForPath(filePath));
+}
+
+/**
+ * Decode the URL pathname into a normalized absolute-style request path for static lookup.
+ */
+function staticRequestPath(request: IncomingMessage): string {
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  const decoded = decodeURIComponent(pathname);
+  const normalized = path.posix.normalize(decoded);
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+/**
+ * Resolve a real asset path or SPA fallback path without rewriting missing compiled assets.
+ */
+async function existingStaticFilePath(staticRoot: string, assetPath: string, requestedPath: string): Promise<string | null> {
+  const directPath = await readableFilePath(assetPath);
+  if (directPath !== null) {
+    return directPath;
+  }
+
+  if (path.extname(requestedPath) !== "") {
+    return null;
+  }
+
+  return readableFilePath(path.join(staticRoot, "index.html"));
+}
+
+/**
+ * Return the path only when it exists and is a regular file.
+ */
+async function readableFilePath(filePath: string): Promise<string | null> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile() ? filePath : null;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Verify a resolved path remains under the configured static root.
+ */
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * Map the small set of Vite asset extensions the viewer currently emits to browser MIME types.
+ */
+function contentTypeForPath(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".ico":
+      return "image/x-icon";
+    case ".webp":
+      return "image/webp";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+/**
  * Parsed viewer API route variants understood by the read-only request handler.
  */
 type ParsedHttpRoute =
@@ -943,6 +1092,21 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
  * Finish a text response unless another error path has already written headers.
  */
 function writeText(response: ServerResponse, status: number, body: string, contentType: string): void {
+  if (response.headersSent) {
+    response.end();
+    return;
+  }
+
+  response.statusCode = status;
+  response.setHeader("content-type", contentType);
+  response.setHeader("cache-control", "no-store");
+  response.end(body);
+}
+
+/**
+ * Finish a static asset response with the same conservative cache policy as JSON during v1.
+ */
+function writeBinary(response: ServerResponse, status: number, body: Buffer, contentType: string): void {
   if (response.headersSent) {
     response.end();
     return;

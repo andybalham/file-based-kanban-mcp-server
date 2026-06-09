@@ -328,6 +328,47 @@ test("Node HTTP adapter serializes route, project, and method errors", async () 
   });
 });
 
+test("Node HTTP adapter serves the built React viewer without changing API errors", async () => {
+  const staticRoot = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-http-static-"));
+  const registry = resourceRegistry([projectState(path.join(os.tmpdir(), "file-kanban-http-static-project"))]);
+
+  await writeStaticText(staticRoot, "index.html", "<!doctype html><div id=\"root\"></div>\n");
+  await writeStaticText(staticRoot, path.join("assets", "viewer.js"), "console.log('viewer');\n");
+
+  await withHttpServer(
+    registry,
+    async (baseUrl) => {
+      const root = await fetch(`${baseUrl}/`);
+      assert.equal(root.status, 200);
+      assert.match(root.headers.get("content-type"), /^text\/html/);
+      assert.equal(await root.text(), "<!doctype html><div id=\"root\"></div>\n");
+
+      const asset = await fetch(`${baseUrl}/assets/viewer.js`);
+      assert.equal(asset.status, 200);
+      assert.match(asset.headers.get("content-type"), /^text\/javascript/);
+      assert.equal(await asset.text(), "console.log('viewer');\n");
+
+      const clientRoute = await fetch(`${baseUrl}/projects/wt_http/board`);
+      assert.equal(clientRoute.status, 200);
+      assert.match(clientRoute.headers.get("content-type"), /^text\/html/);
+      assert.equal(await clientRoute.text(), "<!doctype html><div id=\"root\"></div>\n");
+
+      const missingApi = await fetch(`${baseUrl}/api/wt_http/unknown`);
+      assert.equal(missingApi.status, 404);
+      assert.match(missingApi.headers.get("content-type"), /^application\/json/);
+      assert.deepEqual(await missingApi.json(), {
+        code: "NOT_FOUND",
+        message: "Viewer API route was not found."
+      });
+
+      const missingAsset = await fetch(`${baseUrl}/assets/missing.js`);
+      assert.equal(missingAsset.status, 404);
+      assert.match(missingAsset.headers.get("content-type"), /^text\/plain/);
+    },
+    { staticRoot }
+  );
+});
+
 test("Node HTTP adapter emits WebSocket changes only to subscribers for the changed project", async () => {
   const registry = resourceRegistry([
     projectState(path.join(os.tmpdir(), "file-kanban-http-ws-a"), "wt_a", "Project A"),
@@ -389,8 +430,14 @@ async function writeText(root, relativePath, text) {
   await fs.writeFile(filePath, text, "utf8");
 }
 
-async function withHttpServer(registry, run) {
-  const server = createHttpServer(registry);
+async function writeStaticText(root, relativePath, text) {
+  const filePath = path.join(root, relativePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, text, "utf8");
+}
+
+async function withHttpServer(registry, run, options) {
+  const server = createHttpServer(registry, options);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 
   try {

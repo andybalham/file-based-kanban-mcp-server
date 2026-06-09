@@ -96,6 +96,7 @@ export {
   toHttpErrorBody
 } from "./http.js";
 export type {
+  CreateHttpRequestHandlerOptions,
   HttpBoardEpic,
   HttpBoardNodeBase,
   HttpBoardProgress,
