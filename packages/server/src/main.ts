@@ -73,6 +73,16 @@ export type {
 export { regenerateProject } from "./regenerate.js";
 export type { RegenerateProjectOptions, RegenerationResult, WriteSuppressionSet } from "./regenerate.js";
 
+export { createChokidarProjectFileWatcher, createProjectWatcher } from "./watcher.js";
+export type {
+  CreateProjectWatcherOptions,
+  ProjectFileWatcher,
+  ProjectFileWatcherFactory,
+  ProjectFileWatcherOptions,
+  ProjectWatcherController,
+  ProjectWatcherEventName
+} from "./watcher.js";
+
 export {
   HTTP_ROUTE_DEFINITIONS,
   HttpAdapterError,
