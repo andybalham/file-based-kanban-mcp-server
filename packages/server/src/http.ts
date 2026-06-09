@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { IncomingMessage, Server as NodeHttpServer, ServerResponse } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -111,6 +113,14 @@ export interface HttpViewerRegistry {
 }
 
 /**
+ * Minimal request handler shape used by Node's `http.createServer`.
+ *
+ * The implementation returns a promise so tests can await route logic directly if needed, while
+ * Node is free to ignore the returned promise when it invokes the handler for real sockets.
+ */
+export type HttpRequestHandler = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
+
+/**
  * HTTP-friendly error raised by the read-side contract helpers.
  *
  * Future transport code can map this directly to status code and JSON body while preserving a
@@ -145,6 +155,73 @@ export class HttpAdapterError extends Error {
  * the deterministic registry list.
  */
 export type HttpProjectsResponse = RegisteredProject[];
+
+/**
+ * Create the concrete read-only HTTP request handler for the viewer API.
+ *
+ * This is intentionally small and framework-free because the design allows a minimal Node HTTP
+ * adapter. All project state and status computation still flows through the transport-neutral
+ * helpers below, which keeps the public API contract testable without opening sockets.
+ */
+export function createHttpRequestHandler(registry: HttpViewerRegistry): HttpRequestHandler {
+  return async (request, response) => {
+    try {
+      if (request.method !== "GET") {
+        writeJson(response, 405, {
+          code: "METHOD_NOT_ALLOWED",
+          message: "The viewer API is read-only and accepts GET requests only."
+        });
+        return;
+      }
+
+      const route = parseHttpRoute(request);
+
+      if (route === null) {
+        writeJson(response, 404, {
+          code: "NOT_FOUND",
+          message: "Viewer API route was not found."
+        });
+        return;
+      }
+
+      switch (route.kind) {
+        case "projects":
+          writeJson(response, 200, listHttpProjects(registry));
+          return;
+        case "graph":
+          writeJson(response, 200, getHttpGraph(registry, route.projectId));
+          return;
+        case "entity":
+          writeJson(response, 200, getHttpEntity(registry, route.projectId, route.id));
+          return;
+        case "board":
+          writeJson(response, 200, getHttpBoard(registry, route.projectId));
+          return;
+        case "mermaid":
+          writeText(response, 200, await getHttpMermaid(registry, route.projectId, route.view), "text/plain; charset=utf-8");
+          return;
+      }
+    } catch (error) {
+      const { status, body } = toHttpErrorBody(error);
+      writeJson(response, status, body);
+    }
+  };
+}
+
+/**
+ * Create a Node HTTP server that exposes only the project-scoped read endpoints.
+ *
+ * Later Phase 6 tasks will attach WebSocket subscriptions and static UI serving to the same server
+ * boundary; this task keeps the implementation scoped to the read API.
+ */
+export function createHttpServer(registry: HttpViewerRegistry): NodeHttpServer {
+  return createServer((request, response) => {
+    createHttpRequestHandler(registry)(request, response).catch((error: unknown) => {
+      const { status, body } = toHttpErrorBody(error);
+      writeJson(response, status, body);
+    });
+  });
+}
 
 /**
  * Compact entity row shared by graph, board, and relationship views.
@@ -666,4 +743,76 @@ function mermaidFilePath(project: ProjectState, view: string): string {
  */
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+/**
+ * Parsed viewer API route variants understood by the read-only request handler.
+ */
+type ParsedHttpRoute =
+  | { kind: "projects" }
+  | { kind: "graph"; projectId: ProjectId }
+  | { kind: "entity"; projectId: ProjectId; id: EntityId }
+  | { kind: "board"; projectId: ProjectId }
+  | { kind: "mermaid"; projectId: ProjectId; view: string };
+
+/**
+ * Match a URL path against the exact Phase 6 viewer API surface.
+ *
+ * The Mermaid route deliberately captures all remaining path segments after `/mermaid/` so
+ * `/api/:project/mermaid/epic/:id` maps to the design's logical `epic/:id` view value.
+ */
+function parseHttpRoute(request: IncomingMessage): ParsedHttpRoute | null {
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  const segments = pathname.split("/").filter((segment) => segment.length > 0).map(decodeURIComponent);
+
+  if (segments.length === 2 && segments[0] === "api" && segments[1] === "projects") {
+    return { kind: "projects" };
+  }
+
+  if (segments.length < 3 || segments[0] !== "api") {
+    return null;
+  }
+
+  const projectId = segments[1] as ProjectId;
+  const resource = segments[2];
+
+  if (segments.length === 3 && resource === "graph") {
+    return { kind: "graph", projectId };
+  }
+
+  if (segments.length === 3 && resource === "board") {
+    return { kind: "board", projectId };
+  }
+
+  if (segments.length === 4 && resource === "entity") {
+    return { kind: "entity", projectId, id: segments[3] as EntityId };
+  }
+
+  if (segments.length >= 4 && resource === "mermaid") {
+    return { kind: "mermaid", projectId, view: segments.slice(3).join("/") };
+  }
+
+  return null;
+}
+
+/**
+ * Serialize a JSON response body with deterministic viewer API headers.
+ */
+function writeJson(response: ServerResponse, status: number, body: unknown): void {
+  writeText(response, status, `${JSON.stringify(body)}\n`, "application/json; charset=utf-8");
+}
+
+/**
+ * Finish a text response unless another error path has already written headers.
+ */
+function writeText(response: ServerResponse, status: number, body: string, contentType: string): void {
+  if (response.headersSent) {
+    response.end();
+    return;
+  }
+
+  response.statusCode = status;
+  response.setHeader("content-type", contentType);
+  response.setHeader("cache-control", "no-store");
+  response.end(body);
 }

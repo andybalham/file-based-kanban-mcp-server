@@ -76,6 +76,8 @@ export type { RegenerateProjectOptions, RegenerationResult, WriteSuppressionSet 
 export {
   HTTP_ROUTE_DEFINITIONS,
   HttpAdapterError,
+  createHttpRequestHandler,
+  createHttpServer,
   getHttpBoard,
   getHttpEntity,
   getHttpGraph,
@@ -95,6 +97,7 @@ export type {
   HttpGraphEdge,
   HttpGraphResponse,
   HttpProjectsResponse,
+  HttpRequestHandler,
   HttpRouteKey,
   HttpRouteMethod,
   HttpViewerRegistry,

@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   HTTP_ROUTE_DEFINITIONS,
   RegistryError,
+  createHttpServer,
   getHttpBoard,
   getHttpEntity,
   getHttpGraph,
@@ -261,10 +262,105 @@ test("unknown project and missing entity map to HTTP 404 error bodies", () => {
   });
 });
 
+test("Node HTTP adapter serves project-scoped read endpoints", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-http-adapter-"));
+  const registry = resourceRegistry([projectState(root)]);
+  await writeText(root, path.join(".worktracker", "graphs", "dependencies.mmd"), "graph LR\n");
+
+  await withHttpServer(registry, async (baseUrl) => {
+    const projects = await fetchJson(`${baseUrl}/api/projects`);
+    assert.deepEqual(projects, [
+      {
+        projectId: "wt_http",
+        title: "HTTP Project",
+        root
+      }
+    ]);
+
+    const board = await fetchJson(`${baseUrl}/api/wt_http/board`);
+    assert.equal(board.epics[1].effectiveStatus, "blocked");
+    assert.deepEqual(board.epics[1].blockedBy, ["E-001"]);
+
+    const graph = await fetchJson(`${baseUrl}/api/wt_http/graph`);
+    assert.deepEqual(graph.edges, [
+      { from: "E-002", to: "E-001", type: "epic" },
+      { from: "S-002", to: "S-001", type: "story" },
+      { from: "T-002", to: "T-001", type: "task" }
+    ]);
+
+    const entityDetail = await fetchJson(`${baseUrl}/api/wt_http/entity/T-001`);
+    assert.equal(entityDetail.body, "\n");
+    assert.deepEqual(entityDetail.dependents, ["T-002"]);
+
+    const mermaid = await fetch(`${baseUrl}/api/wt_http/mermaid/dependencies`);
+    assert.equal(mermaid.status, 200);
+    assert.match(mermaid.headers.get("content-type"), /^text\/plain/);
+    assert.equal(await mermaid.text(), "graph LR\n");
+  });
+});
+
+test("Node HTTP adapter serializes route, project, and method errors", async () => {
+  const registry = resourceRegistry([projectState(path.join(os.tmpdir(), "file-kanban-http-adapter-errors"))]);
+
+  await withHttpServer(registry, async (baseUrl) => {
+    const unknownProject = await fetch(`${baseUrl}/api/wt_missing/board`);
+    assert.equal(unknownProject.status, 404);
+    assert.deepEqual(await unknownProject.json(), {
+      code: "PROJECT_NOT_FOUND",
+      message: "Project 'wt_missing' is not registered.",
+      details: { projectId: "wt_missing" }
+    });
+
+    const missingRoute = await fetch(`${baseUrl}/api/wt_http/unknown`);
+    assert.equal(missingRoute.status, 404);
+    assert.deepEqual(await missingRoute.json(), {
+      code: "NOT_FOUND",
+      message: "Viewer API route was not found."
+    });
+
+    const writeAttempt = await fetch(`${baseUrl}/api/wt_http/board`, { method: "POST" });
+    assert.equal(writeAttempt.status, 405);
+    assert.deepEqual(await writeAttempt.json(), {
+      code: "METHOD_NOT_ALLOWED",
+      message: "The viewer API is read-only and accepts GET requests only."
+    });
+  });
+});
+
 async function writeText(root, relativePath, text) {
   const filePath = path.join(root, relativePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, text, "utf8");
+}
+
+async function withHttpServer(registry, run) {
+  const server = createHttpServer(registry);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /^application\/json/);
+  return response.json();
 }
 
 function captureHttpError(run) {
