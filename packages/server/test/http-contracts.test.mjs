@@ -1,0 +1,393 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import {
+  HTTP_ROUTE_DEFINITIONS,
+  RegistryError,
+  getHttpBoard,
+  getHttpEntity,
+  getHttpGraph,
+  getHttpMermaid,
+  listHttpProjects,
+  toHttpErrorBody
+} from "../dist/main.js";
+
+test("HTTP route definitions expose the read-only design surface", () => {
+  assert.deepEqual(Object.keys(HTTP_ROUTE_DEFINITIONS), [
+    "projects",
+    "graph",
+    "entity",
+    "board",
+    "mermaid",
+    "websocket"
+  ]);
+
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(HTTP_ROUTE_DEFINITIONS).map(([key, definition]) => [key, definition.path])),
+    {
+      projects: "/api/projects",
+      graph: "/api/:project/graph",
+      entity: "/api/:project/entity/:id",
+      board: "/api/:project/board",
+      mermaid: "/api/:project/mermaid/:view",
+      websocket: "/ws"
+    }
+  );
+
+  assert.equal(Object.values(HTTP_ROUTE_DEFINITIONS).every((definition) => definition.mutates === false), true);
+  assert.equal(HTTP_ROUTE_DEFINITIONS.websocket.method, "WS");
+});
+
+test("GET /api/projects returns deterministic registry summaries as a bare array", () => {
+  const registry = resourceRegistry([
+    projectState(path.join(os.tmpdir(), "file-kanban-http-b"), "wt_b", "Project B"),
+    projectState(path.join(os.tmpdir(), "file-kanban-http-a"), "wt_a", "Project A")
+  ]);
+
+  assert.deepEqual(listHttpProjects(registry), [
+    {
+      projectId: "wt_a",
+      title: "Project A",
+      root: path.join(os.tmpdir(), "file-kanban-http-a")
+    },
+    {
+      projectId: "wt_b",
+      title: "Project B",
+      root: path.join(os.tmpdir(), "file-kanban-http-b")
+    }
+  ]);
+});
+
+test("GET /api/:project/graph returns active nodes and typed same-type edges", () => {
+  const root = path.join(os.tmpdir(), "file-kanban-http-graph");
+  const registry = resourceRegistry([projectState(root)]);
+
+  assert.deepEqual(getHttpGraph(registry, "wt_http"), {
+    entities: [
+      entityView({
+        id: "E-001",
+        type: "epic",
+        title: "Epic",
+        parent: null,
+        effectiveStatus: "blocked",
+        dependsOn: [],
+        dependents: ["E-002"]
+      }),
+      entityView({
+        id: "E-002",
+        type: "epic",
+        title: "Gated epic",
+        parent: null,
+        effectiveStatus: "blocked",
+        dependsOn: ["E-001"],
+        dependents: []
+      }),
+      entityView({
+        id: "S-001",
+        type: "story",
+        title: "Story",
+        parent: "E-001",
+        effectiveStatus: "todo",
+        dependsOn: [],
+        dependents: ["S-002"]
+      }),
+      entityView({
+        id: "S-002",
+        type: "story",
+        title: "Gated story",
+        parent: "E-002",
+        effectiveStatus: "blocked",
+        dependsOn: ["S-001"],
+        dependents: []
+      }),
+      entityView({
+        id: "T-001",
+        type: "task",
+        title: "Ready task",
+        parent: "S-001",
+        effectiveStatus: "todo",
+        dependsOn: [],
+        dependents: ["T-002"],
+        estimate: 2,
+        tags: ["ready"],
+        filePath: path.join(root, ".worktracker", "entities", "T-001-ready-task.md")
+      }),
+      entityView({
+        id: "T-002",
+        type: "task",
+        title: "Blocked task",
+        parent: "S-002",
+        effectiveStatus: "blocked",
+        dependsOn: ["T-001"],
+        dependents: [],
+        filePath: path.join(root, ".worktracker", "entities", "T-002-blocked-task.md")
+      })
+    ],
+    edges: [
+      { from: "E-002", to: "E-001", type: "epic" },
+      { from: "S-002", to: "S-001", type: "story" },
+      { from: "T-002", to: "T-001", type: "task" }
+    ]
+  });
+});
+
+test("GET /api/:project/board returns computed statuses and active hierarchy", () => {
+  const registry = resourceRegistry([projectState(path.join(os.tmpdir(), "file-kanban-http-board"))]);
+
+  assert.deepEqual(getHttpBoard(registry, "wt_http"), {
+    epics: [
+      {
+        id: "E-001",
+        type: "epic",
+        title: "Epic",
+        effectiveStatus: "blocked",
+        blockedBy: [],
+        progress: { done: 0, total: 1 },
+        children: [
+          {
+            id: "S-001",
+            type: "story",
+            title: "Story",
+            effectiveStatus: "todo",
+            blockedBy: [],
+            progress: { done: 0, total: 1 },
+            children: [
+              {
+                id: "T-001",
+                type: "task",
+                title: "Ready task",
+                effectiveStatus: "todo",
+                blockedBy: [],
+                progress: { done: 0, total: 1 },
+                status: "todo",
+                dependsOn: [],
+                estimate: 2,
+                tags: ["ready"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        id: "E-002",
+        type: "epic",
+        title: "Gated epic",
+        effectiveStatus: "blocked",
+        blockedBy: ["E-001"],
+        progress: { done: 0, total: 1 },
+        children: [
+          {
+            id: "S-002",
+            type: "story",
+            title: "Gated story",
+            effectiveStatus: "blocked",
+            blockedBy: ["S-001"],
+            progress: { done: 0, total: 1 },
+            children: [
+              {
+                id: "T-002",
+                type: "task",
+                title: "Blocked task",
+                effectiveStatus: "blocked",
+                blockedBy: ["T-001"],
+                progress: { done: 0, total: 1 },
+                status: "todo",
+                dependsOn: ["T-001"],
+                tags: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+});
+
+test("GET /api/:project/entity/:id returns direct archived entity details", () => {
+  const root = path.join(os.tmpdir(), "file-kanban-http-entity");
+  const registry = resourceRegistry([projectState(root)]);
+
+  assert.deepEqual(getHttpEntity(registry, "wt_http", "T-003"), {
+    id: "T-003",
+    type: "task",
+    title: "Archived task",
+    parent: "S-001",
+    status: "done",
+    effectiveStatus: "done",
+    dependsOn: [],
+    dependents: [],
+    tags: ["archived"],
+    archived: true,
+    filePath: path.join(root, ".worktracker", "entities", "T-003-archived-task.md"),
+    body: "\nArchived body.\n",
+    created: "2026-06-07T00:00:00Z",
+    updated: "2026-06-07T00:00:00Z"
+  });
+});
+
+test("GET /api/:project/mermaid/:view reads generated Mermaid text without regenerating", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-http-mermaid-"));
+  const registry = resourceRegistry([projectState(root)]);
+
+  await writeText(root, path.join(".worktracker", "graphs", "dependencies.mmd"), "graph LR\n");
+  await writeText(root, path.join(".worktracker", "graphs", "E-001.mmd"), "graph TB\n");
+
+  assert.equal(await getHttpMermaid(registry, "wt_http", "dependencies"), "graph LR\n");
+  assert.equal(await getHttpMermaid(registry, "wt_http", "epic/E-001"), "graph TB\n");
+});
+
+test("unknown project and missing entity map to HTTP 404 error bodies", () => {
+  const registry = resourceRegistry([projectState(path.join(os.tmpdir(), "file-kanban-http-errors"))]);
+
+  assert.deepEqual(captureHttpError(() => getHttpBoard(registry, "wt_missing")), {
+    status: 404,
+    body: {
+      code: "PROJECT_NOT_FOUND",
+      message: "Project 'wt_missing' is not registered.",
+      details: { projectId: "wt_missing" }
+    }
+  });
+
+  assert.deepEqual(captureHttpError(() => getHttpEntity(registry, "wt_http", "T-404")), {
+    status: 404,
+    body: {
+      code: "NOT_FOUND",
+      message: "Entity 'T-404' was not found.",
+      details: { projectId: "wt_http", id: "T-404" }
+    }
+  });
+});
+
+async function writeText(root, relativePath, text) {
+  const filePath = path.join(root, relativePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, text, "utf8");
+}
+
+function captureHttpError(run) {
+  try {
+    run();
+  } catch (error) {
+    return toHttpErrorBody(error);
+  }
+
+  throw new Error("Expected function to throw.");
+}
+
+function resourceRegistry(states) {
+  return {
+    listProjects() {
+      return states
+        .map((state) => ({
+          projectId: state.projectId,
+          title: state.marker.title,
+          root: state.root
+        }))
+        .sort((left, right) => left.projectId.localeCompare(right.projectId) || left.root.localeCompare(right.root));
+    },
+    resolveProject(projectId) {
+      const state = states.find((candidate) => candidate.projectId === projectId);
+      if (state === undefined) {
+        throw new RegistryError("PROJECT_NOT_FOUND", `Project '${projectId}' is not registered.`, { projectId });
+      }
+
+      return state;
+    }
+  };
+}
+
+function projectState(root, projectId = "wt_http", title = "HTTP Project") {
+  const entities = [
+    entity({ id: "E-001", type: "epic", title: "Epic", parent: null }),
+    entity({ id: "E-002", type: "epic", title: "Gated epic", parent: null, dependsOn: ["E-001"] }),
+    entity({ id: "S-001", type: "story", title: "Story", parent: "E-001" }),
+    entity({ id: "S-002", type: "story", title: "Gated story", parent: "E-002", dependsOn: ["S-001"] }),
+    entity({
+      id: "T-001",
+      type: "task",
+      title: "Ready task",
+      parent: "S-001",
+      estimate: 2,
+      tags: ["ready"],
+      filePath: path.join(root, ".worktracker", "entities", "T-001-ready-task.md")
+    }),
+    entity({
+      id: "T-002",
+      type: "task",
+      title: "Blocked task",
+      parent: "S-002",
+      dependsOn: ["T-001"],
+      filePath: path.join(root, ".worktracker", "entities", "T-002-blocked-task.md")
+    }),
+    entity({
+      id: "T-003",
+      type: "task",
+      title: "Archived task",
+      parent: "S-001",
+      status: "done",
+      tags: ["archived"],
+      archived: true,
+      body: "\nArchived body.\n",
+      filePath: path.join(root, ".worktracker", "entities", "T-003-archived-task.md")
+    })
+  ];
+
+  return {
+    projectId,
+    root,
+    marker: {
+      projectId,
+      title,
+      created: "2026-06-07T00:00:00Z"
+    },
+    index: {
+      byId: new Map(entities.map((current) => [current.id, current])),
+      childrenOf: new Map([
+        ["E-001", ["S-001"]],
+        ["E-002", ["S-002"]],
+        ["S-001", ["T-001", "T-003"]],
+        ["S-002", ["T-002"]]
+      ])
+    },
+    eff: new Map([
+      ["E-001", "blocked"],
+      ["E-002", "blocked"],
+      ["S-001", "todo"],
+      ["S-002", "blocked"],
+      ["T-001", "todo"],
+      ["T-002", "blocked"],
+      ["T-003", "done"]
+    ])
+  };
+}
+
+function entityView(overrides) {
+  return {
+    status: "todo",
+    archived: false,
+    filePath: "",
+    tags: [],
+    ...overrides
+  };
+}
+
+function entity(overrides) {
+  return {
+    id: "T-001",
+    type: "task",
+    title: "Task",
+    parent: "S-001",
+    status: "todo",
+    dependsOn: [],
+    tags: [],
+    archived: false,
+    created: "2026-06-07T00:00:00Z",
+    updated: "2026-06-07T00:00:00Z",
+    body: "\n",
+    filePath: "",
+    ...overrides
+  };
+}

@@ -73,6 +73,37 @@ export type {
 export { regenerateProject } from "./regenerate.js";
 export type { RegenerateProjectOptions, RegenerationResult, WriteSuppressionSet } from "./regenerate.js";
 
+export {
+  HTTP_ROUTE_DEFINITIONS,
+  HttpAdapterError,
+  getHttpBoard,
+  getHttpEntity,
+  getHttpGraph,
+  getHttpMermaid,
+  listHttpProjects,
+  toHttpErrorBody
+} from "./http.js";
+export type {
+  HttpBoardEpic,
+  HttpBoardNodeBase,
+  HttpBoardProgress,
+  HttpBoardResponse,
+  HttpBoardStory,
+  HttpBoardTask,
+  HttpEntityDetailResponse,
+  HttpEntityView,
+  HttpGraphEdge,
+  HttpGraphResponse,
+  HttpProjectsResponse,
+  HttpRouteKey,
+  HttpRouteMethod,
+  HttpViewerRegistry,
+  HttpWebSocketChangedMessage,
+  HttpWebSocketReloadMessage,
+  HttpWebSocketServerMessage,
+  HttpWebSocketSubscribeMessage
+} from "./http.js";
+
 /**
  * Create the process-wide project registry and immediately populate it from configured watch roots.
  *
