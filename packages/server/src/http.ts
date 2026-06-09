@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server as NodeHttpServer, ServerResponse } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { WebSocket, WebSocketServer } from "ws";
 
 import type { EffectiveStatus, Entity, EntityId, EntityType, ProjectId, ProjectState } from "@file-kanban/core";
 import { buildDepGraph } from "@file-kanban/core";
@@ -92,6 +93,27 @@ export interface HttpWebSocketReloadMessage {
 
 /** Server-to-client WebSocket messages promised by the viewer API design. */
 export type HttpWebSocketServerMessage = HttpWebSocketChangedMessage | HttpWebSocketReloadMessage;
+
+/**
+ * Broadcast surface used by later watcher and regeneration orchestration code.
+ *
+ * The concrete socket set is intentionally hidden behind project-scoped methods so file-watching
+ * tasks cannot accidentally fan out one project's refresh notification to every browser tab.
+ */
+export interface HttpWebSocketBroadcaster {
+  /** Emit a fine-grained changed event to clients subscribed to `projectId`. */
+  broadcastChanged(projectId: ProjectId, ids?: EntityId[]): void;
+  /** Emit a broad reload event to clients subscribed to `projectId`. */
+  broadcastReload(projectId: ProjectId): void;
+}
+
+/**
+ * HTTP server returned by the viewer adapter.
+ *
+ * It remains a normal Node HTTP server for listen/close semantics, with the project-scoped
+ * broadcast hooks attached for server-side change producers.
+ */
+export type HttpViewerServer = NodeHttpServer & HttpWebSocketBroadcaster;
 
 /** One key in {@link HTTP_ROUTE_DEFINITIONS}. */
 export type HttpRouteKey = keyof typeof HTTP_ROUTE_DEFINITIONS;
@@ -211,16 +233,20 @@ export function createHttpRequestHandler(registry: HttpViewerRegistry): HttpRequ
 /**
  * Create a Node HTTP server that exposes only the project-scoped read endpoints.
  *
- * Later Phase 6 tasks will attach WebSocket subscriptions and static UI serving to the same server
- * boundary; this task keeps the implementation scoped to the read API.
+ * The same listener owns `/ws` upgrades for live viewer notifications. Browser clients subscribe
+ * by sending `{ "subscribe": "<projectId>" }`; server-side producers call the attached broadcast
+ * methods to deliver `changed` or `reload` messages only to clients for that project.
  */
-export function createHttpServer(registry: HttpViewerRegistry): NodeHttpServer {
-  return createServer((request, response) => {
+export function createHttpServer(registry: HttpViewerRegistry): HttpViewerServer {
+  const server = createServer((request, response) => {
     createHttpRequestHandler(registry)(request, response).catch((error: unknown) => {
       const { status, body } = toHttpErrorBody(error);
       writeJson(response, status, body);
     });
   });
+
+  const websocketHub = attachHttpWebSocketHub(server, registry);
+  return Object.assign(server, websocketHub);
 }
 
 /**
@@ -431,6 +457,117 @@ export async function getHttpMermaid(
     }
 
     throw error;
+  }
+}
+
+/**
+ * Attach a no-server WebSocket endpoint to the existing HTTP listener.
+ *
+ * Keeping the WebSocket server in `noServer` mode makes `/ws` an explicit member of the viewer API
+ * surface instead of accepting upgrades on arbitrary HTTP paths.
+ */
+function attachHttpWebSocketHub(server: NodeHttpServer, registry: HttpViewerRegistry): HttpWebSocketBroadcaster {
+  const websocketServer = new WebSocketServer({ noServer: true });
+  const subscriptions = new Map<WebSocket, ProjectId>();
+
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+
+    if (pathname !== HTTP_ROUTE_DEFINITIONS.websocket.path) {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+      websocketServer.emit("connection", websocket, request);
+    });
+  });
+
+  websocketServer.on("connection", (websocket) => {
+    websocket.on("message", (data) => {
+      const subscribeMessage = parseWebSocketSubscribeMessage(data);
+
+      if (subscribeMessage === null) {
+        websocket.close(1008, "Expected JSON subscribe message.");
+        return;
+      }
+
+      try {
+        registry.resolveProject(subscribeMessage.subscribe);
+        subscriptions.set(websocket, subscribeMessage.subscribe);
+      } catch {
+        websocket.close(1008, "Unknown project subscription.");
+      }
+    });
+
+    websocket.on("close", () => {
+      subscriptions.delete(websocket);
+    });
+  });
+
+  server.on("close", () => {
+    for (const websocket of websocketServer.clients) {
+      websocket.terminate();
+    }
+
+    websocketServer.close();
+    subscriptions.clear();
+  });
+
+  return {
+    broadcastChanged(projectId, ids = []) {
+      broadcastToProject(subscriptions, projectId, {
+        type: "changed",
+        project: projectId,
+        ids: [...ids].sort((a, b) => a.localeCompare(b))
+      });
+    },
+    broadcastReload(projectId) {
+      broadcastToProject(subscriptions, projectId, {
+        type: "reload",
+        project: projectId
+      });
+    }
+  };
+}
+
+/**
+ * Parse and validate the single client-to-server WebSocket control message supported by v1.
+ */
+function parseWebSocketSubscribeMessage(data: WebSocket.RawData): HttpWebSocketSubscribeMessage | null {
+  try {
+    const parsed = JSON.parse(data.toString());
+
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { subscribe?: unknown }).subscribe === "string" &&
+      (parsed as { subscribe: string }).subscribe.length > 0
+    ) {
+      return { subscribe: (parsed as { subscribe: ProjectId }).subscribe };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Send one serialized message to live clients subscribed to exactly one project.
+ */
+function broadcastToProject(
+  subscriptions: Map<WebSocket, ProjectId>,
+  projectId: ProjectId,
+  message: HttpWebSocketServerMessage
+): void {
+  const serialized = JSON.stringify(message);
+
+  for (const [websocket, subscribedProjectId] of subscriptions) {
+    if (subscribedProjectId === projectId && websocket.readyState === WebSocket.OPEN) {
+      websocket.send(serialized);
+    }
   }
 }
 

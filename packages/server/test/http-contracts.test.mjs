@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WebSocket } from "ws";
 
 import {
   HTTP_ROUTE_DEFINITIONS,
@@ -327,6 +328,61 @@ test("Node HTTP adapter serializes route, project, and method errors", async () 
   });
 });
 
+test("Node HTTP adapter emits WebSocket changes only to subscribers for the changed project", async () => {
+  const registry = resourceRegistry([
+    projectState(path.join(os.tmpdir(), "file-kanban-http-ws-a"), "wt_a", "Project A"),
+    projectState(path.join(os.tmpdir(), "file-kanban-http-ws-b"), "wt_b", "Project B")
+  ]);
+
+  await withHttpServer(registry, async (baseUrl, server) => {
+    const projectAClient = await openWebSocket(`${baseUrl.replace("http:", "ws:")}/ws`);
+    const projectBClient = await openWebSocket(`${baseUrl.replace("http:", "ws:")}/ws`);
+    const projectAMessages = collectWebSocketJson(projectAClient);
+    const projectBMessages = collectWebSocketJson(projectBClient);
+
+    try {
+      projectAClient.send(JSON.stringify({ subscribe: "wt_a" }));
+      projectBClient.send(JSON.stringify({ subscribe: "wt_b" }));
+      await waitForSubscription();
+
+      server.broadcastChanged("wt_a", ["T-002", "T-001"]);
+      assert.deepEqual(await projectAMessages.next(), {
+        type: "changed",
+        project: "wt_a",
+        ids: ["T-001", "T-002"]
+      });
+      assert.deepEqual(projectBMessages.values, []);
+
+      server.broadcastReload("wt_b");
+      assert.deepEqual(await projectBMessages.next(), {
+        type: "reload",
+        project: "wt_b"
+      });
+      assert.equal(projectAMessages.values.length, 0);
+    } finally {
+      projectAClient.close();
+      projectBClient.close();
+    }
+  });
+});
+
+test("Node HTTP adapter rejects WebSocket subscriptions for unknown projects", async () => {
+  const registry = resourceRegistry([projectState(path.join(os.tmpdir(), "file-kanban-http-ws-unknown"))]);
+
+  await withHttpServer(registry, async (baseUrl) => {
+    const client = await openWebSocket(`${baseUrl.replace("http:", "ws:")}/ws`);
+
+    try {
+      const close = onceWebSocketClose(client);
+      client.send(JSON.stringify({ subscribe: "wt_missing" }));
+      const closeEvent = await close;
+      assert.equal(closeEvent.code, 1008);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 async function writeText(root, relativePath, text) {
   const filePath = path.join(root, relativePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -341,7 +397,7 @@ async function withHttpServer(registry, run) {
     const address = server.address();
     assert.equal(typeof address, "object");
     assert.notEqual(address, null);
-    await run(`http://127.0.0.1:${address.port}`);
+    await run(`http://127.0.0.1:${address.port}`, server);
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -361,6 +417,65 @@ async function fetchJson(url) {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /^application\/json/);
   return response.json();
+}
+
+async function openWebSocket(url) {
+  const websocket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    websocket.once("open", resolve);
+    websocket.once("error", reject);
+  });
+  return websocket;
+}
+
+function collectWebSocketJson(websocket) {
+  const values = [];
+  const waiters = [];
+
+  websocket.on("message", (data) => {
+    const value = JSON.parse(data.toString());
+    const waiter = waiters.shift();
+    if (waiter !== undefined) {
+      waiter(value);
+      return;
+    }
+
+    values.push(value);
+  });
+
+  return {
+    values,
+    next() {
+      if (values.length > 0) {
+        return Promise.resolve(values.shift());
+      }
+
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Timed out waiting for WebSocket message."));
+        }, 500);
+
+        waiters.push((value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        });
+      });
+    }
+  };
+}
+
+function onceWebSocketClose(websocket) {
+  return new Promise((resolve) => {
+    websocket.once("close", (code, reason) => {
+      resolve({ code, reason: reason.toString() });
+    });
+  });
+}
+
+async function waitForSubscription() {
+  await new Promise((resolve) => {
+    setTimeout(resolve, 20);
+  });
 }
 
 function captureHttpError(run) {
