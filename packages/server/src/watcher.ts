@@ -54,6 +54,21 @@ export interface CreateProjectWatcherOptions {
   watchRoots: string[];
   /** Project-scoped broadcaster attached to the HTTP/WebSocket server. */
   broadcaster: HttpWebSocketBroadcaster;
+  /**
+   * Absolute paths currently being written by this server process.
+   *
+   * Mutation and regeneration code add paths here before chokidar can report the corresponding
+   * filesystem events. The watcher consumes matching events so server-originated writes do not
+   * create a second refresh/broadcast cycle that would be indistinguishable from an external edit.
+   */
+  writeSuppressionSet?: Set<string>;
+  /**
+   * Milliseconds to keep a consumed suppression entry after its first matching event.
+   *
+   * Filesystems often emit clustered `add`/`change` events for one atomic write. A short debounce
+   * lets the cluster drain while still allowing a later human edit to trigger a genuine refresh.
+   */
+  writeSuppressionDebounceMs?: number;
   /** Optional watcher factory for tests; production defaults to chokidar. */
   watcherFactory?: ProjectFileWatcherFactory;
 }
@@ -104,6 +119,15 @@ class ProjectWatcher implements ProjectWatcherController {
   /** Factory that creates chokidar-compatible watcher handles. */
   private readonly watcherFactory: ProjectFileWatcherFactory;
 
+  /** Shared set of normalized paths that should not trigger refresh broadcasts. */
+  private readonly writeSuppressionSet: Set<string>;
+
+  /** Delay used before deleting a consumed suppressed path from the shared set. */
+  private readonly writeSuppressionDebounceMs: number;
+
+  /** Pending cleanup timers keyed by normalized suppressed path. */
+  private readonly suppressionCleanupTimers = new Map<string, NodeJS.Timeout>();
+
   /** Coarse watcher over configured roots, created at start. */
   private markerWatcher: ProjectFileWatcher | null = null;
 
@@ -117,6 +141,8 @@ class ProjectWatcher implements ProjectWatcherController {
     this.registry = options.registry;
     this.watchRoots = options.watchRoots.map((watchRoot) => path.resolve(watchRoot));
     this.broadcaster = options.broadcaster;
+    this.writeSuppressionSet = options.writeSuppressionSet ?? new Set<string>();
+    this.writeSuppressionDebounceMs = options.writeSuppressionDebounceMs ?? 50;
     this.watcherFactory = options.watcherFactory ?? createChokidarProjectFileWatcher;
   }
 
@@ -148,6 +174,10 @@ class ProjectWatcher implements ProjectWatcherController {
 
     this.markerWatcher = null;
     this.contentWatchersByRoot.clear();
+    for (const timer of this.suppressionCleanupTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.suppressionCleanupTimers.clear();
 
     await Promise.all(watchers.map((watcher) => watcher.close()));
   }
@@ -194,13 +224,44 @@ class ProjectWatcher implements ProjectWatcherController {
       ignoreInitial: true
     });
 
-    watcher.on("all", (event) => {
+    watcher.on("all", (event, filePath) => {
       if (event === "add" || event === "change" || event === "unlink") {
+        if (this.consumeSuppressedWrite(filePath)) {
+          return;
+        }
+
         void this.refreshProject(root, project.projectId);
       }
     });
 
     this.contentWatchersByRoot.set(root, watcher);
+  }
+
+  /**
+   * Return true when an event path belongs to a server-originated write that should be ignored.
+   *
+   * The entry is not deleted immediately. Atomic write implementations and platform watchers can
+   * report more than one event for the same path, so deletion is delayed and re-debounced on each
+   * matching event to keep the suppression window tightly scoped to that write cluster.
+   */
+  private consumeSuppressedWrite(filePath: string): boolean {
+    const normalizedPath = normalizeSuppressionPath(filePath);
+    if (!this.writeSuppressionSet.has(normalizedPath)) {
+      return false;
+    }
+
+    const existingTimer = this.suppressionCleanupTimers.get(normalizedPath);
+    if (existingTimer !== undefined) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+      this.writeSuppressionSet.delete(normalizedPath);
+      this.suppressionCleanupTimers.delete(normalizedPath);
+    }, this.writeSuppressionDebounceMs);
+    this.suppressionCleanupTimers.set(normalizedPath, timer);
+
+    return true;
   }
 
   /**
@@ -244,4 +305,11 @@ function projectRootFromMarkerPath(filePath: string): string {
  */
 function normalizePathSuffix(filePath: string): string {
   return path.normalize(filePath).split(path.sep).join("/");
+}
+
+/**
+ * Normalize absolute filesystem paths before comparing watcher events to server write records.
+ */
+function normalizeSuppressionPath(filePath: string): string {
+  return path.resolve(filePath);
 }

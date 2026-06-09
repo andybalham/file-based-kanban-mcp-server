@@ -189,3 +189,52 @@ test("project watcher refreshes known project content and does not broadcast to 
 
   await watcher.close();
 });
+
+test("project watcher suppresses server-originated content events until the debounce clears", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-watcher-suppression-");
+  const projectRoot = path.join(watchRoot, "project");
+  const suppressedEntityPath = path.join(projectRoot, ".worktracker", "entities", "T-001.md");
+  const fake = createFakeWatcherFactory();
+  const broadcaster = createBroadcaster();
+  const writeSuppressionSet = new Set([path.resolve(suppressedEntityPath)]);
+
+  await writeMarkedProject(projectRoot, "wt_suppressed", "Suppressed Project");
+  await writeEntity(projectRoot, "E-001", "Initial Epic");
+  await writeEntity(projectRoot, "S-001", "Initial Story");
+  await writeEntity(projectRoot, "T-001", "Initial Task");
+
+  const registry = createProjectRegistry({ watchRoots: [watchRoot] });
+  await registry.discover();
+
+  const watcher = createProjectWatcher({
+    registry,
+    watchRoots: [watchRoot],
+    broadcaster,
+    watcherFactory: fake.factory,
+    writeSuppressionSet,
+    writeSuppressionDebounceMs: 10
+  });
+  await watcher.start();
+
+  const contentWatcher = fake.watchers.find((candidate) =>
+    candidate.paths.some((watchPath) => path.resolve(watchPath).startsWith(path.resolve(projectRoot)))
+  );
+  assert.notEqual(contentWatcher, undefined);
+
+  await writeEntity(projectRoot, "T-001", "Server Written Task");
+  contentWatcher.emit("change", suppressedEntityPath);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.deepEqual(broadcaster.reloads, []);
+  assert.equal(writeSuppressionSet.has(path.resolve(suppressedEntityPath)), false);
+  assert.equal(registry.resolveProject("wt_suppressed").index.byId.get("T-001").title, "Initial Task");
+
+  await writeEntity(projectRoot, "T-001", "External Task");
+  contentWatcher.emit("change", suppressedEntityPath);
+  await waitForCondition(() => broadcaster.reloads.length === 1);
+
+  assert.deepEqual(broadcaster.reloads, ["wt_suppressed"]);
+  assert.equal(registry.resolveProject("wt_suppressed").index.byId.get("T-001").title, "External Task");
+
+  await watcher.close();
+});

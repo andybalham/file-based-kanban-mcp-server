@@ -248,6 +248,7 @@ test("executeMcpMutationTool creates an entity and regenerates selected project 
   const state = mutationProjectState(root);
   await seedEntityFiles(root, state);
   const registry = resourceRegistry([state]);
+  const writeSuppressionSet = new Set();
 
   const result = await executeMcpMutationTool(
     registry,
@@ -259,7 +260,7 @@ test("executeMcpMutationTool creates an entity and regenerates selected project 
       tags: ["mcp", "created"],
       body: "\nCreated body.\n"
     },
-    { now: fixedNow }
+    { now: fixedNow, writeSuppressionSet }
   );
 
   assert.deepEqual(result, {
@@ -278,6 +279,9 @@ test("executeMcpMutationTool creates an entity and regenerates selected project 
   assert.equal(state.index.byId.get("S-002").title, "Created from MCP");
   assert.match(await fs.readFile(path.join(root, ".worktracker", "entities", "S-002-created-from-mcp.md"), "utf8"), /id: S-002/);
   assert.match(await fs.readFile(path.join(root, ".worktracker", "index", "INDEX.md"), "utf8"), /Created from MCP/);
+  assert.equal(writeSuppressionSet.has(path.join(root, ".worktracker", ".meta", "counters.json")), true);
+  assert.equal(writeSuppressionSet.has(path.join(root, ".worktracker", "entities", "S-002-created-from-mcp.md")), true);
+  assert.equal(writeSuppressionSet.has(path.join(root, ".worktracker", "index", "INDEX.md")), true);
 });
 
 test("executeMcpMutationTool updates fields, task status, parent, and archived flag", async () => {

@@ -15,7 +15,7 @@ import type {
 import { allocateId, blocked, criticalPath, ready, resolveDetailed, validate, write } from "@file-kanban/core";
 
 import { regenerateProject } from "./regenerate.js";
-import type { RegenerationResult } from "./regenerate.js";
+import type { RegenerationResult, WriteSuppressionSet } from "./regenerate.js";
 import { RegistryError } from "./registry.js";
 import type { RegisteredProject } from "./registry.js";
 
@@ -608,6 +608,14 @@ export interface ExecuteMcpMutationToolOptions {
   now?: () => Date;
   /** Regeneration implementation invoked after a successful entity write. */
   regenerate?: typeof regenerateProject;
+  /**
+   * Shared server-originated write paths consumed by the project content watcher.
+   *
+   * The set stores absolute normalized paths for files this mutation writes. When the OS watcher
+   * later reports those same paths, the watcher can ignore the events instead of treating the
+   * server's own successful mutation as an external edit that needs another reload broadcast.
+   */
+  writeSuppressionSet?: WriteSuppressionSet;
 }
 
 /**
@@ -1230,7 +1238,9 @@ async function regenerateMutationProject(
   project: ProjectState,
   options: ExecuteMcpMutationToolOptions
 ): Promise<RegenerationResult> {
-  return (options.regenerate ?? regenerateProject)(project);
+  return (options.regenerate ?? regenerateProject)(project, {
+    writeSuppressionSet: options.writeSuppressionSet
+  });
 }
 
 /**
@@ -1247,6 +1257,11 @@ async function writeEntityAndRegenerate(
   extraChangedFiles: string[] = []
 ): Promise<string[]> {
   const entityChanged = await write(project.root, entity);
+  recordMutationSuppressionPath(project.root, entity.filePath, options.writeSuppressionSet);
+  for (const changedFile of extraChangedFiles) {
+    recordMutationSuppressionPath(project.root, changedFile, options.writeSuppressionSet);
+  }
+
   const regeneration = await regenerateMutationProject(project, options);
 
   return sortedUniqueStrings([
@@ -1254,6 +1269,25 @@ async function writeEntityAndRegenerate(
     ...(entityChanged ? [projectRelativePath(project.root, entity.filePath)] : []),
     ...regeneration.changedFiles
   ]);
+}
+
+/**
+ * Record a mutating-tool write path in the shared watcher suppression set.
+ *
+ * Core write primitives report project-relative paths in some cases and absolute paths in others.
+ * Normalizing here gives watcher comparisons one representation and keeps the suppression contract
+ * independent from the storage module's internal path style.
+ */
+function recordMutationSuppressionPath(
+  root: string,
+  filePath: string,
+  writeSuppressionSet: WriteSuppressionSet | undefined
+): void {
+  if (writeSuppressionSet === undefined) {
+    return;
+  }
+
+  writeSuppressionSet.add(path.resolve(root, filePath));
 }
 
 /**
