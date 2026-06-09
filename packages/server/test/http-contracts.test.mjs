@@ -9,6 +9,8 @@ import {
   HTTP_ROUTE_DEFINITIONS,
   RegistryError,
   createHttpServer,
+  createProjectRegistry,
+  createProjectWatcher,
   getHttpBoard,
   getHttpEntity,
   getHttpGraph,
@@ -424,6 +426,113 @@ test("Node HTTP adapter rejects WebSocket subscriptions for unknown projects", a
   });
 });
 
+test("watcher-driven HTTP WebSocket reloads are project-scoped and suppress server writes", async () => {
+  const watchRoot = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-http-watcher-"));
+  const firstRoot = path.join(watchRoot, "first");
+  const secondRoot = path.join(watchRoot, "second");
+  const firstTaskPath = path.join(firstRoot, ".worktracker", "entities", "T-001.md");
+  const fake = createFakeWatcherFactory();
+  const writeSuppressionSet = new Set();
+
+  await writeMarkedProject(firstRoot, "wt_first", "First Project");
+  await writeMarkedProject(secondRoot, "wt_second", "Second Project");
+  await writeStoredEntity(firstRoot, "E-001", "Initial Epic");
+  await writeStoredEntity(firstRoot, "S-001", "Initial Story");
+  await writeStoredEntity(firstRoot, "T-001", "Initial Task");
+
+  const registry = createProjectRegistry({ watchRoots: [watchRoot] });
+  await registry.discover();
+
+  await withHttpServer(registry, async (baseUrl, server) => {
+    const watcher = createProjectWatcher({
+      registry,
+      watchRoots: [watchRoot],
+      broadcaster: server,
+      watcherFactory: fake.factory,
+      writeSuppressionSet,
+      writeSuppressionDebounceMs: 10
+    });
+    await watcher.start();
+
+    const firstClient = await openWebSocket(`${baseUrl.replace("http:", "ws:")}/ws`);
+    const secondClient = await openWebSocket(`${baseUrl.replace("http:", "ws:")}/ws`);
+    const firstMessages = collectWebSocketJson(firstClient);
+    const secondMessages = collectWebSocketJson(secondClient);
+
+    try {
+      firstClient.send(JSON.stringify({ subscribe: "wt_first" }));
+      secondClient.send(JSON.stringify({ subscribe: "wt_second" }));
+      await waitForSubscription();
+
+      const firstContentWatcher = fake.watchers.find((candidate) =>
+        candidate.paths.some((watchPath) => path.resolve(watchPath).startsWith(path.resolve(firstRoot)))
+      );
+      assert.notEqual(firstContentWatcher, undefined);
+
+      await writeStoredEntity(firstRoot, "T-001", "Externally Edited Task");
+      firstContentWatcher.emit("change", firstTaskPath);
+
+      assert.deepEqual(await firstMessages.next(), {
+        type: "reload",
+        project: "wt_first"
+      });
+      assert.deepEqual(secondMessages.values, []);
+      assert.equal(registry.resolveProject("wt_first").index.byId.get("T-001").title, "Externally Edited Task");
+
+      writeSuppressionSet.add(path.resolve(firstTaskPath));
+      await writeStoredEntity(firstRoot, "T-001", "Server Written Task");
+      firstContentWatcher.emit("change", firstTaskPath);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      assert.deepEqual(firstMessages.values, []);
+      assert.deepEqual(secondMessages.values, []);
+      assert.equal(registry.resolveProject("wt_first").index.byId.get("T-001").title, "Externally Edited Task");
+    } finally {
+      firstClient.close();
+      secondClient.close();
+      await watcher.close();
+    }
+  });
+});
+
+class FakeWatcher {
+  constructor(paths, options) {
+    this.paths = paths;
+    this.options = options;
+    this.listeners = [];
+    this.closed = false;
+  }
+
+  on(event, listener) {
+    assert.equal(event, "all");
+    this.listeners.push(listener);
+    return this;
+  }
+
+  emit(event, filePath) {
+    for (const listener of this.listeners) {
+      listener(event, filePath);
+    }
+  }
+
+  async close() {
+    this.closed = true;
+  }
+}
+
+function createFakeWatcherFactory() {
+  const watchers = [];
+
+  return {
+    watchers,
+    factory(paths, options) {
+      const watcher = new FakeWatcher(paths, options);
+      watchers.push(watcher);
+      return watcher;
+    }
+  };
+}
+
 async function writeText(root, relativePath, text) {
   const filePath = path.join(root, relativePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -434,6 +543,37 @@ async function writeStaticText(root, relativePath, text) {
   const filePath = path.join(root, relativePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, text, "utf8");
+}
+
+async function writeMarkedProject(root, projectId, title) {
+  await fs.mkdir(path.join(root, ".worktracker", "entities"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".worktracker", "project.json"),
+    `{\n  "projectId": "${projectId}",\n  "title": "${title}",\n  "created": "2026-06-09T00:00:00Z"\n}\n`,
+    "utf8"
+  );
+}
+
+async function writeStoredEntity(root, id, title) {
+  const type = id.startsWith("E-") ? "epic" : id.startsWith("S-") ? "story" : "task";
+  const parent = type === "epic" ? null : type === "story" ? "E-001" : "S-001";
+  const lines = [
+    "---",
+    `id: "${id}"`,
+    `type: "${type}"`,
+    `title: "${title}"`,
+    `parent: ${parent === null ? "null" : `"${parent}"`}`,
+    ...(type === "task" ? ['status: "todo"'] : []),
+    "dependsOn: []",
+    "tags: []",
+    "archived: false",
+    'created: "2026-06-09T00:00:00Z"',
+    'updated: "2026-06-09T00:00:00Z"',
+    "---",
+    ""
+  ];
+
+  await writeText(root, path.join(".worktracker", "entities", `${id}.md`), `${lines.join("\n")}\n`);
 }
 
 async function withHttpServer(registry, run, options) {
