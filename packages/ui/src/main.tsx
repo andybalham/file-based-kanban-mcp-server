@@ -1,18 +1,23 @@
 import { StrictMode, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   type BoardEpic,
   type BoardResponse,
   type BoardStory,
   type BoardTask,
   type EffectiveStatus,
+  type EntityDetail,
+  type EntityId,
+  type EntityType,
   type ProjectId,
   type ProjectSummary,
   type ViewerApiClient,
   ViewerApiError,
   createViewerApiClient
 } from "./api";
-import { blockedByNote, collapsibleBoardIds, summarizeBoard, type BoardCounts } from "./derived";
+import { blockedByNote, collapsibleBoardIds, indexBoard, summarizeBoard, type BoardCounts } from "./derived";
 import "./styles.css";
 
 /** The read-only shell tabs promised by the UI design. */
@@ -63,6 +68,29 @@ const DEFAULT_PREFERENCES: ViewerPreferences = {
   showIds: true
 };
 
+/**
+ * Markdown rendering overrides for the read-only drawer.
+ *
+ * `react-markdown` keeps raw HTML inert by default. These overrides preserve that safety while
+ * matching the design requirement that task-list checkboxes render as non-interactive viewer state.
+ */
+const MARKDOWN_COMPONENTS: Components = {
+  a({ children, href }) {
+    return (
+      <a href={safeMarkdownHref(href)} rel="noreferrer" target="_blank">
+        {children}
+      </a>
+    );
+  },
+  input({ checked, type }) {
+    if (type === "checkbox") {
+      return <ReadOnlyCheckbox checked={checked === true} />;
+    }
+
+    return <input checked={checked} disabled readOnly type={type} />;
+  }
+};
+
 /** Root React component for the read-only viewer. */
 function App() {
   const api = useMemo(() => createViewerApiClient(), []);
@@ -77,6 +105,7 @@ function App() {
   const [pulseToken, setPulseToken] = useState(0);
   const [tab, setTab] = useState<ViewerTab>("board");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [selectedEntityId, setSelectedEntityId] = useState<EntityId | null>(null);
   const [preferences] = useState<ViewerPreferences>(DEFAULT_PREFERENCES);
 
   useRootAppearance(preferences);
@@ -155,6 +184,7 @@ function App() {
    */
   useEffect(() => {
     setCollapsed(new Set());
+    setSelectedEntityId(null);
 
     if (selectedProjectId === null) {
       setData({ board: null });
@@ -236,6 +266,11 @@ function App() {
     setCollapsed(hasExpandedRows ? new Set(collapsibleIds) : new Set());
   }, [collapsibleIds, hasExpandedRows]);
 
+  /** Open the read-only drawer for an entity selected from any viewer surface. */
+  const openEntity = useCallback((id: EntityId) => {
+    setSelectedEntityId(id);
+  }, []);
+
   return (
     <div className="app-frame" aria-busy={isLoadingProjects || isLoadingProjectData}>
       <header className="top-bar">
@@ -275,12 +310,24 @@ function App() {
             collapsed={collapsed}
             counts={counts}
             isLoading={isLoadingProjects || isLoadingProjectData}
+            onOpenEntity={openEntity}
             showIds={preferences.showIds}
             tab={tab}
             toggleCollapsed={toggleCollapsed}
           />
         </section>
       </main>
+
+      {selectedProjectId !== null && selectedEntityId !== null ? (
+        <EntityDrawer
+          api={api}
+          board={data.board}
+          initialEntityId={selectedEntityId}
+          projectId={selectedProjectId}
+          refreshToken={pulseToken}
+          onClose={() => setSelectedEntityId(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -483,6 +530,7 @@ function ActiveView({
   collapsed,
   counts,
   isLoading,
+  onOpenEntity,
   showIds,
   tab,
   toggleCollapsed
@@ -491,6 +539,7 @@ function ActiveView({
   collapsed: Set<string>;
   counts: BoardCounts;
   isLoading: boolean;
+  onOpenEntity(id: EntityId): void;
   showIds: boolean;
   tab: ViewerTab;
   toggleCollapsed(id: string): void;
@@ -505,7 +554,15 @@ function ActiveView({
 
   switch (tab) {
     case "board":
-      return <BoardPreview board={board} collapsed={collapsed} showIds={showIds} toggleCollapsed={toggleCollapsed} />;
+      return (
+        <BoardPreview
+          board={board}
+          collapsed={collapsed}
+          onOpenEntity={onOpenEntity}
+          showIds={showIds}
+          toggleCollapsed={toggleCollapsed}
+        />
+      );
     case "ready":
       return (
         <EmptyState
@@ -529,11 +586,13 @@ function ActiveView({
 function BoardPreview({
   board,
   collapsed,
+  onOpenEntity,
   showIds,
   toggleCollapsed
 }: {
   board: BoardResponse;
   collapsed: Set<string>;
+  onOpenEntity(id: EntityId): void;
   showIds: boolean;
   toggleCollapsed(id: string): void;
 }) {
@@ -544,6 +603,7 @@ function BoardPreview({
           collapsed={collapsed}
           epic={epic}
           key={epic.id}
+          onOpenEntity={onOpenEntity}
           showIds={showIds}
           toggleCollapsed={toggleCollapsed}
         />
@@ -556,11 +616,13 @@ function BoardPreview({
 function EpicRow({
   collapsed,
   epic,
+  onOpenEntity,
   showIds,
   toggleCollapsed
 }: {
   collapsed: Set<string>;
   epic: BoardEpic;
+  onOpenEntity(id: EntityId): void;
   showIds: boolean;
   toggleCollapsed(id: string): void;
 }) {
@@ -569,7 +631,7 @@ function EpicRow({
 
   return (
     <div className="epic-group">
-      <HierarchyRow depth={0}>
+      <HierarchyRow depth={0} onOpen={() => onOpenEntity(epic.id)}>
         {hasChildren ? <ChevronButton open={open} onClick={() => toggleCollapsed(epic.id)} /> : <ChevronPlaceholder />}
         <EntityLabel id={epic.id} showIds={showIds} title={epic.title} strong />
         <RowSpacer />
@@ -581,6 +643,7 @@ function EpicRow({
             <StoryRow
               collapsed={collapsed}
               key={story.id}
+              onOpenEntity={onOpenEntity}
               showIds={showIds}
               story={story}
               toggleCollapsed={toggleCollapsed}
@@ -594,11 +657,13 @@ function EpicRow({
 /** Render one story row and its expanded task leaves. */
 function StoryRow({
   collapsed,
+  onOpenEntity,
   showIds,
   story,
   toggleCollapsed
 }: {
   collapsed: Set<string>;
+  onOpenEntity(id: EntityId): void;
   showIds: boolean;
   story: BoardStory;
   toggleCollapsed(id: string): void;
@@ -608,26 +673,26 @@ function StoryRow({
 
   return (
     <>
-      <HierarchyRow depth={1}>
+      <HierarchyRow depth={1} onOpen={() => onOpenEntity(story.id)}>
         {hasChildren ? <ChevronButton open={open} onClick={() => toggleCollapsed(story.id)} /> : <ChevronPlaceholder />}
         <EntityLabel id={story.id} showIds={showIds} title={story.title} strong />
         <RowSpacer />
         <ProgressMeter progress={story.progress} />
         <StatusBadge status={story.effectiveStatus} />
       </HierarchyRow>
-      {open ? story.children.map((task) => <TaskRow key={task.id} showIds={showIds} task={task} />) : null}
+      {open ? story.children.map((task) => <TaskRow key={task.id} onOpenEntity={onOpenEntity} showIds={showIds} task={task} />) : null}
     </>
   );
 }
 
 /** Render one read-only task row with checkbox and dependency hint. */
-function TaskRow({ showIds, task }: { showIds: boolean; task: BoardTask }) {
+function TaskRow({ onOpenEntity, showIds, task }: { onOpenEntity(id: EntityId): void; showIds: boolean; task: BoardTask }) {
   const done = task.status === "done";
   const archived = task.archived === true;
   const waitingOn = blockedByNote(task);
 
   return (
-    <HierarchyRow className={archived ? "board-row-archived" : undefined} depth={2}>
+    <HierarchyRow className={archived ? "board-row-archived" : undefined} depth={2} onOpen={() => onOpenEntity(task.id)}>
       <span className="task-spacer" aria-hidden="true" />
       <ReadOnlyCheckbox checked={done} dimmed={archived} />
       <EntityLabel dim={done || archived} id={task.id} showIds={showIds} title={task.title} />
@@ -640,9 +705,39 @@ function TaskRow({ showIds, task }: { showIds: boolean; task: BoardTask }) {
 }
 
 /** Shared row wrapper that applies the design's depth-based left padding. */
-function HierarchyRow({ children, className, depth }: { children: React.ReactNode; className?: string; depth: 0 | 1 | 2 }) {
+function HierarchyRow({
+  children,
+  className,
+  depth,
+  onOpen
+}: {
+  children: React.ReactNode;
+  className?: string;
+  depth: 0 | 1 | 2;
+  onOpen?(): void;
+}) {
+  const interactive = onOpen !== undefined;
+
   return (
-    <div className={className === undefined ? "board-row" : `board-row ${className}`} style={{ "--depth": depth } as CSSProperties}>
+    <div
+      className={[
+        "board-row",
+        interactive ? "board-row-interactive" : "",
+        className ?? ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      style={{ "--depth": depth } as CSSProperties}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (interactive && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
       {children}
     </div>
   );
@@ -700,9 +795,269 @@ function ReadOnlyCheckbox({ checked, dimmed = false }: { checked: boolean; dimme
 /** Render one collapsible-row chevron as a local-only control. */
 function ChevronButton({ onClick, open }: { onClick(): void; open: boolean }) {
   return (
-    <button className="chev-btn" type="button" aria-label={open ? "Collapse row" : "Expand row"} onClick={onClick}>
+    <button
+      className="chev-btn"
+      type="button"
+      aria-label={open ? "Collapse row" : "Expand row"}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+    >
       <ChevronRight open={open} />
     </button>
+  );
+}
+
+/** Read-only entity drawer with keyboard and relation-chip navigation. */
+function EntityDrawer({
+  api,
+  board,
+  initialEntityId,
+  projectId,
+  refreshToken,
+  onClose
+}: {
+  api: ViewerApiClient;
+  board: BoardResponse | null;
+  initialEntityId: EntityId;
+  projectId: ProjectId;
+  refreshToken: number;
+  onClose(): void;
+}) {
+  const [stack, setStack] = useState<EntityId[]>(() => [initialEntityId]);
+  const [detail, setDetail] = useState<EntityDetail | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const currentId = stack.at(-1) ?? initialEntityId;
+  const boardIndex = useMemo(() => (board === null ? null : indexBoard(board)), [board]);
+
+  /**
+   * Reset the local navigation stack when a different entity is selected outside the drawer.
+   */
+  useEffect(() => {
+    setStack([initialEntityId]);
+    setClosing(false);
+  }, [initialEntityId]);
+
+  /**
+   * Fetch the current drawer entity. The refresh token lets project-scoped WS updates refresh the
+   * open payload without creating a browser write path or optimistic state.
+   */
+  useEffect(() => {
+    const controller = new AbortController();
+    setIsLoading(true);
+    setError(null);
+
+    api
+      .getEntity(projectId, currentId, controller.signal)
+      .then((nextDetail) => {
+        setDetail(nextDetail);
+      })
+      .catch((unknownError) => {
+        if (!isAbortError(unknownError)) {
+          setError(messageFromError(unknownError));
+          setDetail(null);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [api, currentId, projectId, refreshToken]);
+
+  /** Scroll each newly opened entity back to the top of the full-height panel. */
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [currentId]);
+
+  /** Clear a pending delayed close if the drawer unmounts during project switching. */
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const close = useCallback(() => {
+    setClosing(true);
+    closeTimerRef.current = window.setTimeout(onClose, 210);
+  }, [onClose]);
+
+  const navigate = useCallback((id: EntityId) => {
+    setStack((currentStack) => [...currentStack, id]);
+  }, []);
+
+  const back = useCallback(() => {
+    setStack((currentStack) => (currentStack.length > 1 ? currentStack.slice(0, -1) : currentStack));
+  }, []);
+
+  /**
+   * Match the prototype keyboard model: Escape closes; Backspace walks relation history first.
+   */
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        close();
+        return;
+      }
+
+      if (event.key === "Backspace" && stack.length > 1) {
+        event.preventDefault();
+        back();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [back, close, stack.length]);
+
+  const relationGroups = detail === null ? [] : detailRelationGroups(detail, boardIndex);
+
+  return (
+    <div className="drawer-layer" role="presentation">
+      <button
+        className={closing ? "drawer-backdrop drawer-backdrop-closing" : "drawer-backdrop"}
+        type="button"
+        aria-label="Close entity detail drawer"
+        onClick={close}
+      />
+      <aside
+        className={closing ? "entity-drawer entity-drawer-closing scroll" : "entity-drawer scroll"}
+        ref={scrollRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="entity-drawer-title"
+      >
+        <header className="drawer-header">
+          <div className="drawer-actions">
+            {stack.length > 1 ? (
+              <button className="drawer-icon-button" type="button" title="Back (Backspace)" onClick={back}>
+                <BackIcon />
+              </button>
+            ) : null}
+            <span className="kind-chip">{detail === null ? "Entity" : kindLabel(detail.type)}</span>
+            {detail?.archived === true ? <span className="drawer-archive-chip">Archived</span> : null}
+            <span className="row-spacer" />
+            <button className="drawer-icon-button" type="button" title="Close (Esc)" onClick={close}>
+              <CloseIcon />
+            </button>
+          </div>
+          <div className="drawer-title-row">
+            <div className="drawer-title-copy">
+              <div className="drawer-id">{currentId}</div>
+              <h2 id="entity-drawer-title" className={detail?.archived === true ? "drawer-title drawer-title-archived" : "drawer-title"}>
+                {detail?.title ?? (isLoading ? "Loading entity" : "Entity unavailable")}
+              </h2>
+            </div>
+            {detail === null ? null : <StatusBadge status={detail.effectiveStatus} />}
+          </div>
+        </header>
+
+        {error === null ? null : <div className="error-banner">{error}</div>}
+
+        {detail !== null && relationGroups.length > 0 ? (
+          <section className="drawer-relations" aria-label="Entity relations">
+            {relationGroups.map((group) => (
+              <RelationGroup group={group} key={group.label} onNavigate={navigate} />
+            ))}
+          </section>
+        ) : null}
+
+        <section className="drawer-body" aria-label="Entity body">
+          {detail === null && isLoading ? <EmptyState title="Loading entity" body="Fetching entity detail." /> : null}
+          {detail !== null ? <MarkdownBody source={detail.body} /> : null}
+        </section>
+
+        {detail !== null && hasDrawerMeta(detail) ? <DrawerMeta detail={detail} /> : null}
+      </aside>
+    </div>
+  );
+}
+
+/** One relation group rendered as compact navigable chips. */
+function RelationGroup({ group, onNavigate }: { group: RelationGroupModel; onNavigate(id: EntityId): void }) {
+  return (
+    <div className="relation-group">
+      <div className="relation-label">{group.label}</div>
+      <div className="relation-chip-row">
+        {group.items.map((item) => (
+          <button
+            className={item.missing ? "relation-chip relation-chip-missing" : "relation-chip"}
+            disabled={item.missing}
+            key={item.id}
+            type="button"
+            title={item.missing ? `${item.id} is not in this project` : item.title ?? item.id}
+            onClick={() => onNavigate(item.id)}
+          >
+            {item.status === null ? null : <span className={`relation-dot relation-dot-${item.status}`} aria-hidden="true" />}
+            <span className="relation-id">{item.id}</span>
+            {item.title === null ? null : <span className="relation-title">{item.title}</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Render drawer Markdown through `react-markdown` with GFM and read-only task checkboxes. */
+function MarkdownBody({ source }: { source: string }) {
+  if (source.trim().length === 0) {
+    return <div className="md md-empty">No description provided.</div>;
+  }
+
+  return (
+    <div className="md">
+      <ReactMarkdown components={MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>
+        {source}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+/** Render optional drawer metadata only when the server supplied values. */
+function DrawerMeta({ detail }: { detail: EntityDetail }) {
+  return (
+    <footer className="drawer-meta">
+      <div className="drawer-meta-grid">
+        <MetaItem label="Created" value={formatDate(detail.created)} />
+        <MetaItem label="Updated" value={formatDate(detail.updated)} />
+        {detail.estimate === undefined ? null : <MetaItem label="Estimate" value={String(detail.estimate)} />}
+      </div>
+      {detail.tags.length === 0 ? null : (
+        <div className="tag-row">
+          {detail.tags.map((tag) => (
+            <span className="tag-pill" key={tag}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+    </footer>
+  );
+}
+
+/** Render one metadata key/value pair with mono value text. */
+function MetaItem({ label, value }: { label: string; value: string | null }) {
+  if (value === null || value.length === 0) {
+    return null;
+  }
+
+  return (
+    <span className="meta-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </span>
   );
 }
 
@@ -752,6 +1107,114 @@ function EmptyState({ title, body }: { title: string; body: string }) {
       <p>{body}</p>
     </div>
   );
+}
+
+/** Relation chip model after joining ids against the active board snapshot where possible. */
+interface RelationChipModel {
+  /** Entity id used as the navigation target. */
+  id: EntityId;
+  /** Best-effort title for active board entities; null for missing or not-yet-loaded relations. */
+  title: string | null;
+  /** Best-effort computed status used for the relation status dot. */
+  status: EffectiveStatus | null;
+  /** Whether the endpoint has proven this relation is not resolvable. */
+  missing: boolean;
+}
+
+/** Named drawer relation group. */
+interface RelationGroupModel {
+  /** Section label rendered in the drawer relations region. */
+  label: string;
+  /** Relation chips in deterministic API order. */
+  items: RelationChipModel[];
+}
+
+/**
+ * Convert entity relationship ids into visible relation groups.
+ *
+ * The Phase 6 server returns canonical ids for parent/dependencies/dependents. The drawer enriches
+ * those ids from the active board snapshot when possible, but keeps chips navigable because direct
+ * entity reads can resolve archived entities that collection endpoints intentionally omit.
+ */
+function detailRelationGroups(detail: EntityDetail, boardIndex: ReturnType<typeof indexBoard> | null): RelationGroupModel[] {
+  const groups: RelationGroupModel[] = [];
+
+  if (detail.parent !== null) {
+    groups.push({ label: "Parent", items: [relationChip(detail.parent, boardIndex)] });
+  }
+
+  if (detail.dependsOn.length > 0) {
+    groups.push({ label: "Depends on", items: detail.dependsOn.map((id) => relationChip(id, boardIndex)) });
+  }
+
+  if (detail.dependents.length > 0) {
+    groups.push({ label: "Blocks", items: detail.dependents.map((id) => relationChip(id, boardIndex)) });
+  }
+
+  return groups;
+}
+
+/**
+ * Join one relation id against active board data without treating board absence as missing.
+ */
+function relationChip(id: EntityId, boardIndex: ReturnType<typeof indexBoard> | null): RelationChipModel {
+  const entity = boardIndex?.byId.get(id);
+
+  return {
+    id,
+    title: entity?.title ?? null,
+    status: entity?.effectiveStatus ?? null,
+    missing: false
+  };
+}
+
+/** Return the display label for one entity type chip. */
+function kindLabel(type: EntityType): string {
+  switch (type) {
+    case "epic":
+      return "Epic";
+    case "story":
+      return "Story";
+    case "task":
+      return "Task";
+  }
+}
+
+/** Determine whether the metadata footer has anything useful to render. */
+function hasDrawerMeta(detail: EntityDetail): boolean {
+  return detail.created.length > 0 || detail.updated.length > 0 || detail.estimate !== undefined || detail.tags.length > 0;
+}
+
+/** Format frontmatter timestamps into compact local dates while preserving unparseable values. */
+function formatDate(value: string): string | null {
+  if (value.length === 0) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/**
+ * Keep rendered Markdown links on ordinary web/mail targets.
+ *
+ * Returning `undefined` strips suspicious protocols from the anchor while still showing its label.
+ */
+function safeMarkdownHref(href: string | undefined): string | undefined {
+  if (href === undefined || href.startsWith("#") || href.startsWith("/") || href.startsWith("./") || href.startsWith("../")) {
+    return href;
+  }
+
+  try {
+    const protocol = new URL(href).protocol;
+    return protocol === "http:" || protocol === "https:" || protocol === "mailto:" ? href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Convert API and transport errors into short user-facing text. */
@@ -833,6 +1296,24 @@ function BoardIcon() {
     <svg className="icon icon-large" viewBox="0 0 20 20" aria-hidden="true">
       <rect x="3" y="3" width="14" height="14" rx="3" fill="none" stroke="currentColor" />
       <path d="M7 8h6M7 12h4" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline icon for drawer history navigation. */
+function BackIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M10 3.5 L5.5 8 L10 12.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Inline icon for closing the drawer. */
+function CloseIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4 4 L12 12 M12 4 L4 12" fill="none" stroke="currentColor" strokeLinecap="round" />
     </svg>
   );
 }

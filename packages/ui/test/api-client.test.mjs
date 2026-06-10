@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { ViewerApiError, createViewerApiClient } from "../dist-types/api.js";
 
-test("viewer API client calls the read-only project and board endpoints", async () => {
+test("viewer API client calls the read-only project, board, and entity endpoints", async () => {
   const calls = [];
   const client = createViewerApiClient({
     baseUrl: "http://127.0.0.1:4100/",
@@ -14,12 +14,17 @@ test("viewer API client calls the read-only project and board endpoints", async 
         return jsonResponse([{ projectId: "wt_demo", title: "Demo", root: "C:\\demo" }]);
       }
 
+      if (String(url).endsWith("/entity/T-001")) {
+        return jsonResponse({ id: "T-001", body: "\n" });
+      }
+
       return jsonResponse({ epics: [] });
     }
   });
 
   assert.deepEqual(await client.listProjects(), [{ projectId: "wt_demo", title: "Demo", root: "C:\\demo" }]);
   assert.deepEqual(await client.getBoard("wt/demo"), { epics: [] });
+  assert.deepEqual(await client.getEntity("wt/demo", "T-001"), { id: "T-001", body: "\n" });
   assert.deepEqual(calls, [
     {
       url: "http://127.0.0.1:4100/api/projects",
@@ -28,6 +33,11 @@ test("viewer API client calls the read-only project and board endpoints", async 
     },
     {
       url: "http://127.0.0.1:4100/api/wt%2Fdemo/board",
+      method: "GET",
+      accept: "application/json"
+    },
+    {
+      url: "http://127.0.0.1:4100/api/wt%2Fdemo/entity/T-001",
       method: "GET",
       accept: "application/json"
     }
