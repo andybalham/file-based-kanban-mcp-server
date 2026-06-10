@@ -115,6 +115,13 @@ export interface BoardTask extends BoardNodeBase {
   type: "task";
   /** Persisted task status before computed dependency gates are applied. */
   status: StoredStatus;
+  /**
+   * Optional soft-delete marker for forward compatibility with the UI design's archived-row state.
+   *
+   * The current Phase 6 board endpoint emits active non-archived tasks only, but keeping this field
+   * optional lets the Board renderer de-emphasize archived rows if a later endpoint includes them.
+   */
+  archived?: boolean;
   /** Same-type task dependencies. */
   dependsOn: EntityId[];
   /** Optional estimate displayed by later task detail surfaces. */

@@ -514,6 +514,13 @@ button:disabled {
   color: var(--fg);
 }
 
+.chev-placeholder {
+  width: 20px;
+  height: 20px;
+  margin-left: -2px;
+  flex: 0 0 auto;
+}
+
 .task-spacer {
   width: 12px;
   flex: 0 0 auto;
@@ -537,9 +544,14 @@ button:disabled {
   background: var(--done-ink);
 }
 
+.task-check-dimmed {
+  opacity: 0.5;
+}
+
 .entity-id,
 .progress-meter,
-.row-detail {
+.row-detail,
+.archive-chip {
   font-family: var(--font-mono);
 }
 
@@ -574,12 +586,29 @@ button:disabled {
   text-decoration-color: var(--fg-faint);
 }
 
+.board-row-archived {
+  color: var(--fg-faint);
+}
+
 .row-detail {
   color: var(--fg-faint);
   flex: 0 0 auto;
   font-size: 12px;
   font-style: italic;
   white-space: nowrap;
+}
+
+.archive-chip {
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  line-height: 16px;
+  padding: 0 7px;
+  text-transform: uppercase;
 }
 
 .progress-meter {
@@ -605,6 +634,10 @@ button:disabled {
   height: 100%;
   background: var(--accent);
   opacity: 0.85;
+}
+
+.progress-meter-complete .progress-fill {
+  background: var(--done-ink);
 }
 
 .status-badge {

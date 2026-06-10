@@ -12,6 +12,7 @@ import {
   ViewerApiError,
   createViewerApiClient
 } from "./api";
+import { blockedByNote, collapsibleBoardIds, summarizeBoard, type BoardCounts } from "./derived";
 import "./styles.css";
 
 /** The read-only shell tabs promised by the UI design. */
@@ -35,18 +36,6 @@ interface ViewerPreferences {
 interface ProjectDataState {
   /** Board hierarchy for the selected project, or null while no project is selected. */
   board: BoardResponse | null;
-}
-
-/** Counts shown in the shell tab bar and project summary. */
-interface BoardCounts {
-  /** Total active tasks present in the board hierarchy. */
-  totalTasks: number;
-  /** Tasks that are immediately workable according to the current server effective status. */
-  readyTasks: number;
-  /** Tasks or descendants currently blocked by the server status resolver. */
-  blockedTasks: number;
-  /** Tasks whose effective status is done. */
-  doneTasks: number;
 }
 
 /** Font stacks from the UI reference, applied through CSS variables. */
@@ -575,12 +564,13 @@ function EpicRow({
   showIds: boolean;
   toggleCollapsed(id: string): void;
 }) {
-  const open = !collapsed.has(epic.id);
+  const hasChildren = epic.children.length > 0;
+  const open = hasChildren && !collapsed.has(epic.id);
 
   return (
     <div className="epic-group">
       <HierarchyRow depth={0}>
-        <ChevronButton open={open} onClick={() => toggleCollapsed(epic.id)} />
+        {hasChildren ? <ChevronButton open={open} onClick={() => toggleCollapsed(epic.id)} /> : <ChevronPlaceholder />}
         <EntityLabel id={epic.id} showIds={showIds} title={epic.title} strong />
         <RowSpacer />
         <ProgressMeter progress={epic.progress} />
@@ -613,12 +603,13 @@ function StoryRow({
   story: BoardStory;
   toggleCollapsed(id: string): void;
 }) {
-  const open = !collapsed.has(story.id);
+  const hasChildren = story.children.length > 0;
+  const open = hasChildren && !collapsed.has(story.id);
 
   return (
     <>
       <HierarchyRow depth={1}>
-        <ChevronButton open={open} onClick={() => toggleCollapsed(story.id)} />
+        {hasChildren ? <ChevronButton open={open} onClick={() => toggleCollapsed(story.id)} /> : <ChevronPlaceholder />}
         <EntityLabel id={story.id} showIds={showIds} title={story.title} strong />
         <RowSpacer />
         <ProgressMeter progress={story.progress} />
@@ -632,14 +623,16 @@ function StoryRow({
 /** Render one read-only task row with checkbox and dependency hint. */
 function TaskRow({ showIds, task }: { showIds: boolean; task: BoardTask }) {
   const done = task.status === "done";
-  const waitingOn = task.blockedBy.length > 0 ? `waiting on ${task.blockedBy.join(", ")}` : null;
+  const archived = task.archived === true;
+  const waitingOn = blockedByNote(task);
 
   return (
-    <HierarchyRow depth={2}>
+    <HierarchyRow className={archived ? "board-row-archived" : undefined} depth={2}>
       <span className="task-spacer" aria-hidden="true" />
-      <ReadOnlyCheckbox checked={done} />
-      <EntityLabel dim={done} id={task.id} showIds={showIds} title={task.title} />
+      <ReadOnlyCheckbox checked={done} dimmed={archived} />
+      <EntityLabel dim={done || archived} id={task.id} showIds={showIds} title={task.title} />
       {waitingOn === null ? null : <span className="row-detail">{waitingOn}</span>}
+      {archived ? <span className="archive-chip">Archived</span> : null}
       <RowSpacer />
       <StatusBadge status={task.effectiveStatus} />
     </HierarchyRow>
@@ -647,9 +640,9 @@ function TaskRow({ showIds, task }: { showIds: boolean; task: BoardTask }) {
 }
 
 /** Shared row wrapper that applies the design's depth-based left padding. */
-function HierarchyRow({ children, depth }: { children: React.ReactNode; depth: 0 | 1 | 2 }) {
+function HierarchyRow({ children, className, depth }: { children: React.ReactNode; className?: string; depth: 0 | 1 | 2 }) {
   return (
-    <div className="board-row" style={{ "--depth": depth } as CSSProperties}>
+    <div className={className === undefined ? "board-row" : `board-row ${className}`} style={{ "--depth": depth } as CSSProperties}>
       {children}
     </div>
   );
@@ -687,9 +680,18 @@ function EntityLabel({
 }
 
 /** Render the final read-only checkbox visual used by task rows. */
-function ReadOnlyCheckbox({ checked }: { checked: boolean }) {
+function ReadOnlyCheckbox({ checked, dimmed = false }: { checked: boolean; dimmed?: boolean }) {
   return (
-    <span className={checked ? "task-check task-check-checked" : "task-check"} aria-hidden="true">
+    <span
+      className={[
+        "task-check",
+        checked ? "task-check-checked" : "",
+        dimmed ? "task-check-dimmed" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      aria-hidden="true"
+    >
       {checked ? <CheckIcon small /> : null}
     </span>
   );
@@ -704,6 +706,11 @@ function ChevronButton({ onClick, open }: { onClick(): void; open: boolean }) {
   );
 }
 
+/** Reserve the same row width when an empty composite has no local collapse affordance. */
+function ChevronPlaceholder() {
+  return <span className="chev-placeholder" aria-hidden="true" />;
+}
+
 /** Render descendant progress using the design's faint meter. */
 function ProgressMeter({ progress }: { progress: { done: number; total: number } }) {
   if (progress.total === 0) {
@@ -713,7 +720,7 @@ function ProgressMeter({ progress }: { progress: { done: number; total: number }
   const percent = Math.round((progress.done / progress.total) * 100);
 
   return (
-    <span className="progress-meter">
+    <span className={percent === 100 ? "progress-meter progress-meter-complete" : "progress-meter"}>
       <span className="progress-track">
         <span className="progress-fill" style={{ width: `${percent}%` }} />
       </span>
@@ -745,23 +752,6 @@ function EmptyState({ title, body }: { title: string; body: string }) {
       <p>{body}</p>
     </div>
   );
-}
-
-/** Summarize the board from server read models without storing duplicate derived state. */
-function summarizeBoard(board: BoardResponse | null): BoardCounts {
-  const tasks = board?.epics.flatMap((epic) => epic.children.flatMap((story) => story.children)) ?? [];
-
-  return {
-    totalTasks: tasks.length,
-    readyTasks: tasks.filter((task) => task.status === "todo" && task.effectiveStatus === "todo").length,
-    blockedTasks: tasks.filter((task) => task.effectiveStatus === "blocked").length,
-    doneTasks: tasks.filter((task) => task.effectiveStatus === "done").length
-  };
-}
-
-/** Return epic/story ids that participate in local collapse-all behavior. */
-function collapsibleBoardIds(board: BoardResponse | null): string[] {
-  return board?.epics.flatMap((epic) => [epic.id, ...epic.children.map((story) => story.id)]) ?? [];
 }
 
 /** Convert API and transport errors into short user-facing text. */
