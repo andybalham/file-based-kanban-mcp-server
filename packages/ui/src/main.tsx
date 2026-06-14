@@ -17,7 +17,17 @@ import {
   ViewerApiError,
   createViewerApiClient
 } from "./api";
-import { blockedByNote, collapsibleBoardIds, indexBoard, summarizeBoard, type BoardCounts } from "./derived";
+import {
+  blockedByNote,
+  blockedTasks,
+  collapsibleBoardIds,
+  indexBoard,
+  readyTasks,
+  summarizeBoard,
+  type BlockedTaskRow,
+  type BoardCounts,
+  type IndexedBoardTask
+} from "./derived";
 import "./styles.css";
 
 /** The read-only shell tabs promised by the UI design. */
@@ -524,7 +534,7 @@ function Metric({
   );
 }
 
-/** Select the currently active view while keeping later Phase 7 surfaces as isolated placeholders. */
+/** Select the currently active read-only view for the loaded board. */
 function ActiveView({
   board,
   collapsed,
@@ -548,12 +558,16 @@ function ActiveView({
     return <EmptyState title="Loading project data" body="Fetching project data." />;
   }
 
-  if (board === null || board.epics.length === 0) {
+  if (board === null) {
     return <EmptyState title="This project has no entities yet" body="Tracked epics, stories, and tasks will appear here." />;
   }
 
   switch (tab) {
     case "board":
+      if (board.epics.length === 0) {
+        return <EmptyState title="This project has no entities yet" body="Tracked epics, stories, and tasks will appear here." />;
+      }
+
       return (
         <BoardPreview
           board={board}
@@ -564,19 +578,9 @@ function ActiveView({
         />
       );
     case "ready":
-      return (
-        <EmptyState
-          title={counts.readyTasks === 0 ? "Nothing is ready to start" : `${counts.readyTasks} ready tasks`}
-          body={`${counts.readyTasks} tasks currently match the ready count.`}
-        />
-      );
+      return <ReadyView board={board} onOpenEntity={onOpenEntity} showIds={showIds} />;
     case "blocked":
-      return (
-        <EmptyState
-          title={counts.blockedTasks === 0 ? "No blocked tasks" : `${counts.blockedTasks} blocked tasks`}
-          body={`${counts.blockedTasks} tasks currently match the blocked count.`}
-        />
-      );
+      return <BlockedView board={board} onOpenEntity={onOpenEntity} showIds={showIds} />;
     case "graph":
       return <EmptyState title="Graph" body="Dependency graph data is available from the read API." />;
   }
@@ -701,6 +705,190 @@ function TaskRow({ onOpenEntity, showIds, task }: { onOpenEntity(id: EntityId): 
       <RowSpacer />
       <StatusBadge status={task.effectiveStatus} />
     </HierarchyRow>
+  );
+}
+
+/** Render tasks that are immediately workable according to the derived ready rule. */
+function ReadyView({
+  board,
+  onOpenEntity,
+  showIds
+}: {
+  board: BoardResponse;
+  onOpenEntity(id: EntityId): void;
+  showIds: boolean;
+}) {
+  const rows = readyTasks(board);
+
+  return (
+    <FlatViewShell
+      hint="Tasks shown here are still todo and have no unfinished task dependencies."
+      emptyTitle="Nothing is ready to start."
+      emptyBody="Todo tasks will appear here once every prerequisite task is done."
+      isEmpty={rows.length === 0}
+    >
+      <div className="flat-list" role="list" aria-label="Ready tasks">
+        {rows.map((row) => (
+          <ReadyTaskRow key={row.task.id} row={row} onOpenEntity={onOpenEntity} showIds={showIds} />
+        ))}
+      </div>
+    </FlatViewShell>
+  );
+}
+
+/** Render one ready task as the flat, drawer-opening row promised by the UI design. */
+function ReadyTaskRow({
+  onOpenEntity,
+  row,
+  showIds
+}: {
+  onOpenEntity(id: EntityId): void;
+  row: IndexedBoardTask;
+  showIds: boolean;
+}) {
+  return (
+    <FlatTaskButton className="flat-row" id={row.task.id} onOpenEntity={onOpenEntity}>
+      <ReadOnlyCheckbox checked={false} />
+      <EntityLabel id={row.task.id} showIds={showIds} title={row.task.title} />
+      <Breadcrumb epic={row.epic} story={row.story} />
+      <RowSpacer />
+      <StatusBadge status="todo" />
+    </FlatTaskButton>
+  );
+}
+
+/** Render stored/computed blocked tasks with the blocker ids that explain the current gate. */
+function BlockedView({
+  board,
+  onOpenEntity,
+  showIds
+}: {
+  board: BoardResponse;
+  onOpenEntity(id: EntityId): void;
+  showIds: boolean;
+}) {
+  const rows = blockedTasks(board);
+
+  return (
+    <FlatViewShell
+      hint="Blocked lists tasks whose server-computed effective status is blocked and includes the ids currently holding them."
+      emptyTitle="No blocked tasks."
+      emptyBody="Tasks with unresolved blockers will appear here with their waiting-on chips."
+      isEmpty={rows.length === 0}
+    >
+      <div className="flat-list blocked-list" role="list" aria-label="Blocked tasks">
+        {rows.map((row) => (
+          <BlockedTaskBlock key={row.task.id} row={row} onOpenEntity={onOpenEntity} showIds={showIds} />
+        ))}
+      </div>
+    </FlatViewShell>
+  );
+}
+
+/** Render one blocked task and its wrapped blocker chip row. */
+function BlockedTaskBlock({
+  onOpenEntity,
+  row,
+  showIds
+}: {
+  onOpenEntity(id: EntityId): void;
+  row: BlockedTaskRow;
+  showIds: boolean;
+}) {
+  return (
+    <FlatTaskButton className="blocked-block" id={row.task.id} onOpenEntity={onOpenEntity}>
+      <span className="blocked-main-line">
+        <ReadOnlyCheckbox checked={false} />
+        <EntityLabel id={row.task.id} showIds={showIds} title={row.task.title} />
+        <Breadcrumb epic={row.epic} story={row.story} />
+        <RowSpacer />
+        <StatusBadge status="blocked" />
+      </span>
+      <span className="blocker-line">
+        <span className="blocker-label">waiting on</span>
+        <span className="blocker-chip-row">
+          {row.blockers.length === 0 ? (
+            <span className="blocker-chip blocker-chip-missing">No blocker ids reported</span>
+          ) : (
+            row.blockers.map((blocker) => <BlockerChip blocker={blocker} key={blocker.id} />)
+          )}
+        </span>
+      </span>
+    </FlatTaskButton>
+  );
+}
+
+/** Shared shell for the Ready and Blocked tabs, including their explanatory design hint. */
+function FlatViewShell({
+  children,
+  emptyBody,
+  emptyTitle,
+  hint,
+  isEmpty
+}: {
+  children: React.ReactNode;
+  emptyBody: string;
+  emptyTitle: string;
+  hint: string;
+  isEmpty: boolean;
+}) {
+  return (
+    <div className="flat-view">
+      <div className="view-hint">{hint}</div>
+      {isEmpty ? <EmptyState title={emptyTitle} body={emptyBody} /> : children}
+    </div>
+  );
+}
+
+/** Keyboard-accessible flat task wrapper that opens the read-only drawer but never mutates state. */
+function FlatTaskButton({
+  children,
+  className,
+  id,
+  onOpenEntity
+}: {
+  children: React.ReactNode;
+  className: string;
+  id: EntityId;
+  onOpenEntity(id: EntityId): void;
+}) {
+  return (
+    <div
+      className={className}
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenEntity(id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenEntity(id);
+        }
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Render the flat-view ancestor breadcrumb in mono text. */
+function Breadcrumb({ epic, story }: { epic: BoardEpic; story: BoardStory }) {
+  return (
+    <span className="breadcrumb">
+      {epic.id} &gt; {story.id}
+    </span>
+  );
+}
+
+/** Render one blocker relation chip without making the dependency chip itself a mutation control. */
+function BlockerChip({ blocker }: { blocker: BlockedTaskRow["blockers"][number] }) {
+  const dotStatus = blocker.status ?? "empty";
+
+  return (
+    <span className={blocker.missing ? "blocker-chip blocker-chip-missing" : "blocker-chip"}>
+      <span className={`relation-dot relation-dot-${dotStatus}`} aria-hidden="true" />
+      <span className="blocker-id">{blocker.id}</span>
+      {blocker.title === null ? null : <span className="blocker-title">{blocker.title}</span>}
+    </span>
   );
 }
 

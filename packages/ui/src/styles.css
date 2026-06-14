@@ -599,6 +599,136 @@ button:disabled {
   color: var(--fg-faint);
 }
 
+.flat-view {
+  display: grid;
+}
+
+.view-hint {
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--accent-soft);
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 10px 18px;
+}
+
+.flat-list {
+  display: grid;
+}
+
+.flat-row,
+.blocked-block {
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: var(--row-fs);
+  padding: var(--row-py) 18px;
+}
+
+.flat-row {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+}
+
+.blocked-block {
+  display: flex;
+  min-height: 68px;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flat-row:hover,
+.blocked-block:hover {
+  background: var(--hover);
+}
+
+.flat-row:focus-visible,
+.blocked-block:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.blocked-main-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.breadcrumb,
+.blocker-label,
+.blocker-id {
+  font-family: var(--font-mono);
+}
+
+.breadcrumb {
+  overflow: hidden;
+  color: var(--fg-faint);
+  flex: 0 1 auto;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blocker-line {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+  padding-left: 24px;
+}
+
+.blocker-label {
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-style: italic;
+  line-height: 24px;
+}
+
+.blocker-chip-row {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.blocker-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 22px;
+  padding: 0 9px 0 8px;
+}
+
+.blocker-chip-missing {
+  opacity: 0.58;
+}
+
+.blocker-id {
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+
+.blocker-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .row-detail {
   color: var(--fg-faint);
   flex: 0 0 auto;
@@ -1297,7 +1427,20 @@ button:disabled {
 
   .progress-meter,
   .board-row .status-badge,
+  .breadcrumb,
   .row-detail {
     display: none;
+  }
+
+  .blocked-main-line {
+    align-items: flex-start;
+  }
+
+  .blocked-main-line .status-badge {
+    display: none;
+  }
+
+  .blocker-line {
+    padding-left: 0;
   }
 }
