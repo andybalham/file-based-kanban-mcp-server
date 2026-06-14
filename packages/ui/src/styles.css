@@ -470,6 +470,99 @@ button:disabled {
   padding: 10px 16px;
 }
 
+.validation-panel {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--prog-ink) 24%, transparent);
+  background: color-mix(in oklab, var(--prog-fill) 68%, var(--bg));
+  color: var(--prog-ink);
+  padding: 12px 16px;
+}
+
+.validation-panel-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.validation-panel-header strong {
+  display: block;
+  color: var(--fg);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.validation-panel-header p {
+  margin: 2px 0 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.validation-icon {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in oklab, var(--prog-ink) 28%, transparent);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--prog-ink);
+  flex: 0 0 auto;
+}
+
+.validation-list {
+  display: grid;
+  gap: 6px;
+}
+
+.validation-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+}
+
+.validation-code,
+.validation-entity {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.validation-code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--prog-ink);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.validation-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.validation-entity {
+  border: 1px solid color-mix(in oklab, var(--prog-ink) 28%, transparent);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--prog-ink);
+  cursor: pointer;
+  font-weight: 650;
+  padding: 3px 7px;
+}
+
+.validation-entity:hover,
+.validation-entity:focus-visible {
+  border-color: var(--prog-ink);
+  outline: none;
+}
+
 .board-tree {
   display: grid;
 }

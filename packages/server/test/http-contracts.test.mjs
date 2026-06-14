@@ -210,6 +210,20 @@ test("GET /api/:project/board returns computed statuses and active hierarchy", (
   });
 });
 
+test("GET /api/:project/board surfaces non-blocking validation warnings", () => {
+  const registry = resourceRegistry([warningProjectState(path.join(os.tmpdir(), "file-kanban-http-board-warnings"))]);
+  const board = getHttpBoard(registry, "wt_http");
+
+  assert.deepEqual(board.validationWarnings, [
+    {
+      code: "EMPTY_COMPOSITE",
+      entityId: "E-003",
+      message: "epic has no active children."
+    }
+  ]);
+  assert.equal(board.epics.at(-1).id, "E-003");
+});
+
 test("GET /api/:project/entity/:id returns direct archived entity details", () => {
   const root = path.join(os.tmpdir(), "file-kanban-http-entity");
   const registry = resourceRegistry([projectState(root)]);
@@ -760,6 +774,22 @@ function projectState(root, projectId = "wt_http", title = "HTTP Project") {
       ["T-003", "done"]
     ])
   };
+}
+
+function warningProjectState(root) {
+  const state = projectState(root);
+  const emptyEpic = entity({
+    id: "E-003",
+    type: "epic",
+    title: "Empty epic",
+    parent: null,
+    filePath: path.join(root, ".worktracker", "entities", "E-003-empty-epic.md")
+  });
+
+  state.index.byId.set(emptyEpic.id, emptyEpic);
+  state.index.childrenOf.set(emptyEpic.id, []);
+  state.eff.set(emptyEpic.id, "empty");
+  return state;
 }
 
 function entityView(overrides) {

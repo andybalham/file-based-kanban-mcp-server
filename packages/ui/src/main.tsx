@@ -26,6 +26,7 @@ import {
   type GraphResponse,
   type ProjectId,
   type ProjectSummary,
+  type ValidationIssue,
   type ViewerApiClient,
   ViewerApiError,
   createViewerApiClient
@@ -376,6 +377,7 @@ function App() {
         <section className={tab === "graph" ? "view-card view-card-graph" : "view-card"} aria-label={`${tab} view`}>
           <ViewHeader project={selectedProject} counts={counts} />
           {error === null ? null : <div className="error-banner">{error}</div>}
+          <ValidationWarningsPanel board={data.board} onOpenEntity={openEntity} />
           <ActiveView
             board={data.board}
             collapsed={collapsed}
@@ -596,6 +598,68 @@ function Metric({
       <strong>{value}</strong>
     </span>
   );
+}
+
+/** Surface allowed `validate()` warnings from the board read model without exposing any write path. */
+function ValidationWarningsPanel({
+  board,
+  onOpenEntity
+}: {
+  board: BoardResponse | null;
+  onOpenEntity(id: EntityId): void;
+}) {
+  const warnings = board?.validationWarnings ?? [];
+
+  if (warnings.length === 0) {
+    return null;
+  }
+
+  return (
+    <aside className="validation-panel" aria-label="Validation warnings">
+      <div className="validation-panel-header">
+        <span className="validation-icon" aria-hidden="true">
+          <WarningIcon />
+        </span>
+        <div>
+          <strong>{warnings.length === 1 ? "1 validation warning" : `${warnings.length} validation warnings`}</strong>
+          <p>These findings do not block the project, but they may affect planning decisions.</p>
+        </div>
+      </div>
+      <div className="validation-list" role="list">
+        {warnings.map((warning) => (
+          <ValidationWarningRow key={validationWarningKey(warning)} warning={warning} onOpenEntity={onOpenEntity} />
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+/** Render one warning as diagnostics plus a drawer-opening entity chip when validation supplied one. */
+function ValidationWarningRow({
+  onOpenEntity,
+  warning
+}: {
+  onOpenEntity(id: EntityId): void;
+  warning: ValidationIssue;
+}) {
+  const entityId = warning.entityId;
+
+  return (
+    <div className="validation-row" role="listitem">
+      <span className="validation-code">{warning.code}</span>
+      <span className="validation-message">{warning.message}</span>
+      {entityId === undefined ? null : (
+        <button className="validation-entity" type="button" onClick={() => onOpenEntity(entityId)}>
+          {entityId}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Build a deterministic React key for validation warnings, including message to preserve duplicates. */
+function validationWarningKey(warning: ValidationIssue): string {
+  return `${warning.code}:${warning.entityId ?? "project"}:${warning.message}`;
 }
 
 /** Select the currently active read-only view for the loaded board. */
@@ -2306,6 +2370,16 @@ function InfoIcon() {
     <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" />
       <path d="M8 7.2v4M8 4.8h.01" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline warning icon used by the validation summary panel. */
+function WarningIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 2.4 14 13H2L8 2.4Z" fill="none" stroke="currentColor" strokeLinejoin="round" />
+      <path d="M8 6v3.2M8 11.8h.01" fill="none" stroke="currentColor" strokeLinecap="round" />
     </svg>
   );
 }

@@ -5,8 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 
-import type { EffectiveStatus, Entity, EntityId, EntityType, ProjectId, ProjectState } from "@file-kanban/core";
-import { buildDepGraph } from "@file-kanban/core";
+import type { EffectiveStatus, Entity, EntityId, EntityType, ProjectId, ProjectState, ValidationIssue } from "@file-kanban/core";
+import { buildDepGraph, validate } from "@file-kanban/core";
 
 import { RegistryError } from "./registry.js";
 import type { RegisteredProject } from "./registry.js";
@@ -403,6 +403,13 @@ export interface HttpBoardEpic extends HttpBoardNodeBase {
 export interface HttpBoardResponse {
   /** Active top-level epics sorted by id. */
   epics: HttpBoardEpic[];
+  /**
+   * Non-blocking integrity findings returned by `validate()`.
+   *
+   * Errors should not survive into a routable project state, but warnings are explicitly allowed by
+   * the design and must be visible to humans in the read-only viewer.
+   */
+  validationWarnings?: ValidationIssue[];
 }
 
 /**
@@ -455,8 +462,12 @@ export function getHttpEntity(
 export function getHttpBoard(registry: HttpViewerRegistry, projectId: ProjectId): HttpBoardResponse {
   const project = resolveHttpProject(registry, projectId);
   const epics = childEntities(project, null, "epic").map((epic) => epicBoardNode(project, epic));
+  const warnings = validate(project.index).warnings;
 
-  return { epics };
+  return {
+    epics,
+    ...(warnings.length === 0 ? {} : { validationWarnings: warnings })
+  };
 }
 
 /**

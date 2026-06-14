@@ -93,6 +93,16 @@ export interface BoardProgress {
   total: number;
 }
 
+/** Non-blocking project integrity finding returned by `validate()` through the board read model. */
+export interface ValidationIssue {
+  /** Stable validation code such as `EMPTY_COMPOSITE` or `DONE_WITH_INCOMPLETE_DEP`. */
+  code: string;
+  /** Entity id associated with the finding, when validation can pinpoint one. */
+  entityId?: EntityId;
+  /** Human-readable diagnostic text suitable for the read-only viewer. */
+  message: string;
+}
+
 /** Fields shared by every board hierarchy node. */
 export interface BoardNodeBase {
   /** Stable entity id. */
@@ -150,6 +160,8 @@ export interface BoardEpic extends BoardNodeBase {
 export interface BoardResponse {
   /** Active epics sorted by id. */
   epics: BoardEpic[];
+  /** Non-blocking validation warnings that humans should see before choosing work. */
+  validationWarnings?: ValidationIssue[];
 }
 
 /** Server-to-browser change notification from `/ws`. */
