@@ -96,6 +96,13 @@ Node instead:
 }
 ```
 
+### Agent Skill
+
+This repository includes an agent-facing skill at
+`.agents/skills/file-kanban-mcp-server/SKILL.md`. Load or install that skill in compatible agent
+clients when you want the agent to operate this server through MCP tools and resources, preserve
+same-type dependency rules, explain ready/blocked work, and avoid direct `.worktracker` edits.
+
 Example prompts to use after the MCP server is configured:
 
 - "Use the file-kanban MCP server to list known projects and summarize the ready tasks."
