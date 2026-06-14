@@ -12,6 +12,7 @@ import {
   readMcpResource,
   toMcpStructuredError
 } from "./mcp.js";
+import { loadRuntimeConfig } from "./config.js";
 import type {
   McpEntityMutationToolName,
   McpMutationToolRegistry,
@@ -142,15 +143,16 @@ export async function createStdioMcpServer(options: BuildStdioMcpServerOptions):
  * Start the stdio MCP server for the current Node process.
  *
  * The process root defaults to `process.cwd()` so `init` targets the repository that spawned the
- * MCP server. Watch roots default to that same root and can be expanded with
- * `FILE_KANBAN_WATCH_ROOTS`, separated by the platform path delimiter.
+ * MCP server. Runtime configuration owns watch-root discovery so stdio and HTTP startup share the
+ * same `FILE_KANBAN_WATCH_ROOTS` semantics.
  */
 export async function runStdioServer(options: Partial<BuildStdioMcpServerOptions> = {}): Promise<McpServerRuntime> {
-  const initRoot = options.initRoot ?? process.cwd();
+  const config = loadRuntimeConfig({ cwd: options.initRoot ?? process.cwd() });
+  const initRoot = options.initRoot ?? config.initRoot;
   const registry =
     options.registry ??
     (await bootstrapProjectRegistry({
-      watchRoots: watchRootsFromEnvironment(initRoot)
+      watchRoots: config.watchRoots
     }));
   const server = await createStdioMcpServer({ registry, initRoot });
   const { StdioServerTransport } = await importSdkStdioModule();
@@ -324,21 +326,6 @@ function resourceTemplateForRuntime(
 ): unknown {
   const template = MCP_RESOURCE_TEMPLATES[key];
   return resourceTemplateFactory === undefined ? template : resourceTemplateFactory(key, template);
-}
-
-/**
- * Read watch roots from the environment with the current root as the deterministic fallback.
- */
-function watchRootsFromEnvironment(initRoot: string): string[] {
-  const configured = process.env.FILE_KANBAN_WATCH_ROOTS;
-  if (configured === undefined || configured.trim().length === 0) {
-    return [initRoot];
-  }
-
-  return configured
-    .split(path.delimiter)
-    .map((root) => root.trim())
-    .filter((root) => root.length > 0);
 }
 
 /**
