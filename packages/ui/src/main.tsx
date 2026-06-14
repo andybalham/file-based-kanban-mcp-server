@@ -156,6 +156,18 @@ function App() {
   const counts = useMemo(() => summarizeBoard(data.board), [data.board]);
   const collapsibleIds = useMemo(() => collapsibleBoardIds(data.board), [data.board]);
   const hasExpandedRows = collapsibleIds.some((id) => !collapsed.has(id));
+  const selectedProjectRef = useRef<ProjectId | null>(selectedProjectId);
+  const refreshSequenceRef = useRef(0);
+
+  /**
+   * Keep async refresh completions scoped to the currently selected project.
+   *
+   * WebSocket-triggered reads are intentionally not tied to the project-switch abort controller, so
+   * this ref prevents a slow response for the previous project from replacing the active snapshot.
+   */
+  useEffect(() => {
+    selectedProjectRef.current = selectedProjectId;
+  }, [selectedProjectId]);
 
   /**
    * Fetch the selected project's board and graph as one read-only snapshot.
@@ -165,20 +177,39 @@ function App() {
    */
   const refreshProjectData = useCallback(
     async (projectId: ProjectId, signal?: AbortSignal) => {
+      const refreshSequence = refreshSequenceRef.current + 1;
+      refreshSequenceRef.current = refreshSequence;
+
       setIsLoadingProjectData(true);
       setError(null);
 
       try {
         const [board, graph] = await Promise.all([api.getBoard(projectId, signal), api.getGraph(projectId, signal)]);
+        if (
+          signal?.aborted === true ||
+          selectedProjectRef.current !== projectId ||
+          refreshSequenceRef.current !== refreshSequence
+        ) {
+          return;
+        }
+
         setData({ board, graph });
         setLastUpdatedAt(new Date());
       } catch (unknownError) {
-        if (!isAbortError(unknownError)) {
+        if (
+          !isAbortError(unknownError) &&
+          selectedProjectRef.current === projectId &&
+          refreshSequenceRef.current === refreshSequence
+        ) {
           setError(messageFromError(unknownError));
           setData({ board: null, graph: null });
         }
       } finally {
-        if (signal?.aborted !== true) {
+        if (
+          signal?.aborted !== true &&
+          selectedProjectRef.current === projectId &&
+          refreshSequenceRef.current === refreshSequence
+        ) {
           setIsLoadingProjectData(false);
         }
       }
@@ -255,6 +286,7 @@ function App() {
         onOpen() {
           if (!disposed) {
             setIsLive(true);
+            setPulseToken((currentToken) => currentToken + 1);
           }
         },
         onMessage(message) {
