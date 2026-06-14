@@ -873,6 +873,22 @@ button:disabled {
   background: var(--border-soft);
 }
 
+.graph-fit-button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+.graph-fit-button:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
 .status-filter-row {
   display: flex;
   min-width: 0;
@@ -982,6 +998,149 @@ button:disabled {
   min-height: 480px;
   background: var(--canvas);
   flex: 1 1 auto;
+}
+
+.interactive-graph {
+  position: relative;
+  width: 100%;
+  min-height: 480px;
+  overflow: hidden;
+  background: var(--canvas);
+  cursor: grab;
+  flex: 1 1 auto;
+  touch-action: none;
+}
+
+.interactive-graph:active {
+  cursor: grabbing;
+}
+
+.interactive-graph-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.interactive-graph marker path {
+  fill: var(--fg-faint);
+}
+
+.interactive-graph marker[id$="-dim"] path {
+  fill: var(--border);
+}
+
+.interactive-edge {
+  fill: none;
+  marker-end: inherit;
+  opacity: 0.9;
+  stroke: var(--fg-faint);
+  stroke-width: 1.5;
+}
+
+.interactive-edge-dimmed {
+  opacity: 0.4;
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.interactive-node {
+  color: var(--node-ink);
+  cursor: pointer;
+  outline: none;
+  transition: opacity 0.18s ease;
+}
+
+.interactive-node:focus-visible .interactive-node-box {
+  filter: drop-shadow(0 0 0.35rem color-mix(in oklab, var(--accent) 55%, transparent));
+}
+
+.interactive-node-todo {
+  --node-fill: var(--todo-fill);
+  --node-ink: var(--todo-ink);
+}
+
+.interactive-node-in-progress {
+  --node-fill: var(--prog-fill);
+  --node-ink: var(--prog-ink);
+}
+
+.interactive-node-blocked {
+  --node-fill: var(--block-fill);
+  --node-ink: var(--block-ink);
+}
+
+.interactive-node-done {
+  --node-fill: var(--done-fill);
+  --node-ink: var(--done-ink);
+}
+
+.interactive-node-dimmed {
+  opacity: 0.16;
+}
+
+.interactive-node-box {
+  fill: var(--node-fill);
+  filter: drop-shadow(0 1px 1px rgba(31, 35, 40, 0.06));
+  stroke: var(--node-ink);
+  stroke-width: 1;
+}
+
+.interactive-node-dot {
+  fill: var(--node-ink);
+  opacity: 0.85;
+}
+
+.interactive-node-id {
+  fill: var(--node-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.interactive-node-title {
+  fill: var(--node-ink);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.zoom-cluster {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zoom-button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.zoom-button:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.zoom-readout {
+  position: absolute;
+  bottom: 14px;
+  left: 16px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  pointer-events: none;
 }
 
 .mermaid-scroll {

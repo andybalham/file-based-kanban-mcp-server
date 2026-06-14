@@ -1,4 +1,16 @@
-import { StrictMode, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  StrictMode,
+  type CSSProperties,
+  type PointerEvent,
+  type ReactNode,
+  type WheelEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -25,6 +37,7 @@ import {
   collapsibleBoardIds,
   graphDisplayStatus,
   indexBoard,
+  layoutGraph,
   readyTasks,
   summarizeBoard,
   toMermaid,
@@ -32,6 +45,7 @@ import {
   type BoardCounts,
   type GraphDisplayStatus,
   type GraphScope,
+  type GraphViewEntity,
   type GraphViewModel,
   type IndexedBoardTask
 } from "./derived";
@@ -39,6 +53,9 @@ import "./styles.css";
 
 /** The read-only shell tabs promised by the UI design. */
 type ViewerTab = "board" | "ready" | "blocked" | "graph";
+
+/** Graph renderer modes from the UI design. */
+type GraphMode = "mermaid" | "interactive";
 
 /** Appearance preferences applied as root CSS classes and variables. */
 interface ViewerPreferences {
@@ -625,8 +642,10 @@ function GraphView({
   preferences: ViewerPreferences;
   projectId: ProjectId | null;
 }) {
+  const [mode, setMode] = useState<GraphMode>("mermaid");
   const [scope, setScope] = useState<GraphScope>({ type: "full" });
   const [activeStatuses, setActiveStatuses] = useState<Set<GraphDisplayStatus>>(() => new Set(GRAPH_STATUS_ORDER));
+  const [fitToken, setFitToken] = useState(0);
   const [scopeOpen, setScopeOpen] = useState(false);
   const scopeRef = useRef<HTMLDivElement | null>(null);
   const graphModel = useMemo(() => buildTaskGraph(board, graph, scope), [board, graph, scope]);
@@ -668,6 +687,7 @@ function GraphView({
   }, []);
 
   const scopeLabel = scope.type === "full" ? "Full graph" : `${scope.id} subgraph`;
+  const renderedGraph = mode === "mermaid" ? visibleGraph : graphModel;
   const emptyTitle = graphModel.totalTasks === 0 ? "No tasks to graph yet" : "No tasks match the current filters";
   const emptyBody =
     graphModel.totalTasks === 0
@@ -680,10 +700,20 @@ function GraphView({
     <div className="graph-view">
       <div className="graph-toolbar">
         <div className="segmented-control" aria-label="Graph mode">
-          <button className="segment segment-active" type="button" aria-pressed="true">
+          <button
+            className={mode === "mermaid" ? "segment segment-active" : "segment"}
+            type="button"
+            aria-pressed={mode === "mermaid"}
+            onClick={() => setMode("mermaid")}
+          >
             Mermaid
           </button>
-          <button className="segment" type="button" aria-pressed="false" disabled title="Interactive graph is implemented by a separate task.">
+          <button
+            className={mode === "interactive" ? "segment segment-active" : "segment"}
+            type="button"
+            aria-pressed={mode === "interactive"}
+            onClick={() => setMode("interactive")}
+          >
             Interactive
           </button>
         </div>
@@ -742,6 +772,11 @@ function GraphView({
             />
           ))}
         </div>
+        {mode === "interactive" ? (
+          <button className="graph-fit-button" type="button" onClick={() => setFitToken((currentToken) => currentToken + 1)}>
+            Fit
+          </button>
+        ) : null}
       </div>
 
       {dense ? (
@@ -754,8 +789,15 @@ function GraphView({
       ) : null}
 
       <div className="graph-canvas">
-        {visibleGraph.entities.length === 0 ? (
+        {renderedGraph.entities.length === 0 ? (
           <GraphEmpty title={emptyTitle} body={emptyBody} />
+        ) : mode === "interactive" ? (
+          <InteractiveGraph
+            activeStatuses={activeStatuses}
+            fitToken={fitToken}
+            graph={graphModel}
+            onOpenEntity={onOpenEntity}
+          />
         ) : (
           <MermaidGraph
             accent={preferences.accent}
@@ -902,6 +944,336 @@ function MermaidGraph({
       <div className="mermaid-output" ref={containerRef} aria-label="Task dependency Mermaid graph" />
     </div>
   );
+}
+
+/** Transform state for the hand-rolled interactive SVG graph. */
+interface GraphViewport {
+  /** Horizontal pan in screen pixels. */
+  x: number;
+  /** Vertical pan in screen pixels. */
+  y: number;
+  /** Zoom scale, clamped to the design's useful range. */
+  z: number;
+}
+
+/** Render the pan/zoom SVG graph while preserving read-only node navigation. */
+function InteractiveGraph({
+  activeStatuses,
+  fitToken,
+  graph,
+  onOpenEntity
+}: {
+  activeStatuses: Set<GraphDisplayStatus>;
+  fitToken: number;
+  graph: GraphViewModel;
+  onOpenEntity(id: EntityId): void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const movedRef = useRef(false);
+  const [size, setSize] = useState({ width: 800, height: 520 });
+  const [view, setView] = useState<GraphViewport>({ x: 40, y: 40, z: 1 });
+  const layout = useMemo(() => layoutGraph(graph.entities, graph.edges), [graph.edges, graph.entities]);
+  const entityById = useMemo(() => new Map(graph.entities.map((entity) => [entity.id, entity])), [graph.entities]);
+  const arrowId = useMemo(() => `interactive-arrow-${Math.random().toString(36).slice(2, 10)}`, []);
+  const dimArrowId = `${arrowId}-dim`;
+
+  /** Measure the SVG viewport so fitting and zoom controls respond to card resizing. */
+  useLayoutEffect(() => {
+    if (containerRef.current === null) {
+      return;
+    }
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect === undefined) {
+        return;
+      }
+
+      setSize((currentSize) => {
+        const nextSize = { width: Math.max(1, rect.width), height: Math.max(1, rect.height) };
+        return currentSize.width === nextSize.width && currentSize.height === nextSize.height ? currentSize : nextSize;
+      });
+    });
+
+    resizeObserver.observe(containerRef.current);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  /** Fit the current layout into the visible canvas with a stable amount of visual padding. */
+  const fitToView = useCallback(() => {
+    if (layout.width <= 0 || layout.height <= 0) {
+      return;
+    }
+
+    const padding = 56;
+    const nextZoom = clampZoom(Math.min(size.width / (layout.width + padding * 2), size.height / (layout.height + padding * 2), 1.1));
+
+    setView({
+      x: (size.width - layout.width * nextZoom) / 2,
+      y: (size.height - layout.height * nextZoom) / 2,
+      z: nextZoom
+    });
+  }, [layout.height, layout.width, size.height, size.width]);
+
+  /** Auto-fit on data changes, size changes, and explicit toolbar/cluster fit requests. */
+  useEffect(() => {
+    fitToView();
+  }, [fitToView, fitToken]);
+
+  /** Start a pan gesture without preventing a subsequent no-move node click. */
+  const handlePointerDown = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      dragRef.current = { startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y };
+      movedRef.current = false;
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [view.x, view.y]
+  );
+
+  /** Pan the whole graph group while remembering whether the gesture became a drag. */
+  const handlePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (drag === null) {
+      return;
+    }
+
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      movedRef.current = true;
+    }
+
+    setView((currentView) => ({ ...currentView, x: drag.originX + dx, y: drag.originY + dy }));
+  }, []);
+
+  /** End the current pan gesture; the click handler still reads `movedRef` for node selection. */
+  const handlePointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  /** Zoom around the cursor position so the user's focus point remains stable. */
+  const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    if (containerRef.current === null) {
+      return;
+    }
+
+    event.preventDefault();
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+
+    setView((currentView) => zoomViewport(currentView, factor, mouseX, mouseY));
+  }, []);
+
+  /** Zoom from explicit controls around the visible center of the graph canvas. */
+  const zoomFromCenter = useCallback(
+    (factor: number) => {
+      setView((currentView) => zoomViewport(currentView, factor, size.width / 2, size.height / 2));
+    },
+    [size.height, size.width]
+  );
+
+  /** Open a node only when the last pointer gesture was a click, not a drag. */
+  const handleNodeClick = useCallback(
+    (id: EntityId) => {
+      if (!movedRef.current) {
+        onOpenEntity(id);
+      }
+    },
+    [onOpenEntity]
+  );
+
+  return (
+    <div
+      className="interactive-graph"
+      ref={containerRef}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onWheel={handleWheel}
+    >
+      <svg className="interactive-graph-svg" width={size.width} height={size.height} aria-label="Interactive task dependency graph">
+        <defs>
+          <marker id={arrowId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" />
+          </marker>
+          <marker id={dimArrowId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" />
+          </marker>
+        </defs>
+        <g transform={`translate(${view.x},${view.y}) scale(${view.z})`}>
+          {graph.edges.map((edge) => (
+            <InteractiveGraphEdge
+              activeStatuses={activeStatuses}
+              edge={edge}
+              entityById={entityById}
+              key={`${edge.from}->${edge.to}`}
+              layout={layout}
+              markerId={arrowId}
+              dimMarkerId={dimArrowId}
+            />
+          ))}
+          {graph.entities.map((entity) => (
+            <InteractiveGraphNode
+              active={activeStatuses.has(graphDisplayStatus(entity.effectiveStatus))}
+              entity={entity}
+              key={entity.id}
+              layout={layout}
+              onOpenEntity={handleNodeClick}
+            />
+          ))}
+        </g>
+      </svg>
+
+      <div className="zoom-cluster" onPointerDown={(event) => event.stopPropagation()}>
+        <ZoomButton label="Zoom in" onClick={() => zoomFromCenter(1.2)}>
+          <ZoomInIcon />
+        </ZoomButton>
+        <ZoomButton label="Zoom out" onClick={() => zoomFromCenter(1 / 1.2)}>
+          <ZoomOutIcon />
+        </ZoomButton>
+        <ZoomButton label="Fit graph" onClick={fitToView}>
+          <FitIcon />
+        </ZoomButton>
+      </div>
+      <div className="zoom-readout">{Math.round(view.z * 100)}% . drag to pan . scroll to zoom</div>
+    </div>
+  );
+}
+
+/** Render one prerequisite-to-dependent curve with dimming tied to the endpoint filters. */
+function InteractiveGraphEdge({
+  activeStatuses,
+  dimMarkerId,
+  edge,
+  entityById,
+  layout,
+  markerId
+}: {
+  activeStatuses: Set<GraphDisplayStatus>;
+  dimMarkerId: string;
+  edge: GraphViewModel["edges"][number];
+  entityById: Map<EntityId, GraphViewEntity>;
+  layout: ReturnType<typeof layoutGraph>;
+  markerId: string;
+}) {
+  const from = layout.pos[edge.from];
+  const to = layout.pos[edge.to];
+  const fromEntity = entityById.get(edge.from);
+  const toEntity = entityById.get(edge.to);
+
+  if (from === undefined || to === undefined || fromEntity === undefined || toEntity === undefined) {
+    return null;
+  }
+
+  const x1 = from.x + layout.nodeW;
+  const y1 = from.y + layout.nodeH / 2;
+  const x2 = to.x;
+  const y2 = to.y + layout.nodeH / 2;
+  const midX = (x1 + x2) / 2;
+  const dimmed =
+    !activeStatuses.has(graphDisplayStatus(fromEntity.effectiveStatus)) ||
+    !activeStatuses.has(graphDisplayStatus(toEntity.effectiveStatus));
+
+  return (
+    <path
+      className={dimmed ? "interactive-edge interactive-edge-dimmed" : "interactive-edge"}
+      d={`M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`}
+      markerEnd={`url(#${dimmed ? dimMarkerId : markerId})`}
+    />
+  );
+}
+
+/** Render one interactive task node with stored-status fill and computed-status filter dimming. */
+function InteractiveGraphNode({
+  active,
+  entity,
+  layout,
+  onOpenEntity
+}: {
+  active: boolean;
+  entity: GraphViewEntity;
+  layout: ReturnType<typeof layoutGraph>;
+  onOpenEntity(id: EntityId): void;
+}) {
+  const position = layout.pos[entity.id];
+
+  if (position === undefined) {
+    return null;
+  }
+
+  return (
+    <g
+      className={[
+        "interactive-node",
+        `interactive-node-${entity.status}`,
+        active ? "" : "interactive-node-dimmed"
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      transform={`translate(${position.x},${position.y})`}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${entity.id}`}
+      onClick={() => onOpenEntity(entity.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenEntity(entity.id);
+        }
+      }}
+    >
+      <rect className="interactive-node-box" width={layout.nodeW} height={layout.nodeH} rx="9" />
+      <circle className="interactive-node-dot" cx="14" cy={layout.nodeH / 2} r="4" />
+      <text className="interactive-node-id" x="26" y={layout.nodeH / 2 - 4}>
+        {entity.id}
+      </text>
+      <text className="interactive-node-title" x="26" y={layout.nodeH / 2 + 11}>
+        {truncateGraphTitle(entity.title)}
+      </text>
+    </g>
+  );
+}
+
+/** Render one compact zoom control button. */
+function ZoomButton({ children, label, onClick }: { children: ReactNode; label: string; onClick(): void }) {
+  return (
+    <button className="zoom-button" type="button" title={label} aria-label={label} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+/** Clamp zoom to the interaction range documented for the graph prototype. */
+function clampZoom(value: number): number {
+  return Math.min(2.4, Math.max(0.18, value));
+}
+
+/** Calculate a new viewport scale around a fixed screen coordinate. */
+function zoomViewport(view: GraphViewport, factor: number, centerX: number, centerY: number): GraphViewport {
+  const nextZoom = clampZoom(view.z * factor);
+  const ratio = nextZoom / view.z;
+
+  return {
+    z: nextZoom,
+    x: centerX - (centerX - view.x) * ratio,
+    y: centerY - (centerY - view.y) * ratio
+  };
+}
+
+/** Keep SVG node titles compact without relying on unsupported SVG text wrapping. */
+function truncateGraphTitle(title: string): string {
+  return title.length > 18 ? `${title.slice(0, 17)}...` : title;
 }
 
 /** Render the Graph tab's empty-state icon and copy. */
@@ -1902,6 +2274,39 @@ function InfoIcon() {
     <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" />
       <path d="M8 7.2v4M8 4.8h.01" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline icon for the interactive graph zoom-in control. */
+function ZoomInIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline icon for the interactive graph zoom-out control. */
+function ZoomOutIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3.5 8h9" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline icon for fitting the interactive graph to the viewport. */
+function FitIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M3 6V3h3M13 6V3h-3M3 10v3h3M13 10v3h-3"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
