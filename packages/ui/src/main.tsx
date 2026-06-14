@@ -11,6 +11,7 @@ import {
   type EntityDetail,
   type EntityId,
   type EntityType,
+  type GraphResponse,
   type ProjectId,
   type ProjectSummary,
   type ViewerApiClient,
@@ -20,12 +21,18 @@ import {
 import {
   blockedByNote,
   blockedTasks,
+  buildTaskGraph,
   collapsibleBoardIds,
+  graphDisplayStatus,
   indexBoard,
   readyTasks,
   summarizeBoard,
+  toMermaid,
   type BlockedTaskRow,
   type BoardCounts,
+  type GraphDisplayStatus,
+  type GraphScope,
+  type GraphViewModel,
   type IndexedBoardTask
 } from "./derived";
 import "./styles.css";
@@ -51,6 +58,8 @@ interface ViewerPreferences {
 interface ProjectDataState {
   /** Board hierarchy for the selected project, or null while no project is selected. */
   board: BoardResponse | null;
+  /** Same-type dependency graph for the selected project, or null until it has loaded. */
+  graph: GraphResponse | null;
 }
 
 /** Font stacks from the UI reference, applied through CSS variables. */
@@ -77,6 +86,9 @@ const DEFAULT_PREFERENCES: ViewerPreferences = {
   font: "geist",
   showIds: true
 };
+
+/** Status filter order from the high-fidelity graph toolbar. */
+const GRAPH_STATUS_ORDER = ["todo", "in-progress", "blocked", "done"] as const satisfies readonly GraphDisplayStatus[];
 
 /**
  * Markdown rendering overrides for the read-only drawer.
@@ -106,7 +118,7 @@ function App() {
   const api = useMemo(() => createViewerApiClient(), []);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
-  const [data, setData] = useState<ProjectDataState>({ board: null });
+  const [data, setData] = useState<ProjectDataState>({ board: null, graph: null });
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isLoadingProjectData, setIsLoadingProjectData] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,10 +141,10 @@ function App() {
   const hasExpandedRows = collapsibleIds.some((id) => !collapsed.has(id));
 
   /**
-   * Fetch the selected project's board.
+   * Fetch the selected project's board and graph as one read-only snapshot.
    *
-   * The shell only needs the board read model today; graph, drawer, and derived-view tasks will add
-   * their own API reads without changing the top-level project subscription contract.
+   * The graph view joins the hierarchy from `/board` with same-type edges from `/graph`, so both
+   * reads refresh together after project switches and WebSocket pushes.
    */
   const refreshProjectData = useCallback(
     async (projectId: ProjectId, signal?: AbortSignal) => {
@@ -140,13 +152,13 @@ function App() {
       setError(null);
 
       try {
-        const board = await api.getBoard(projectId, signal);
-        setData({ board });
+        const [board, graph] = await Promise.all([api.getBoard(projectId, signal), api.getGraph(projectId, signal)]);
+        setData({ board, graph });
         setLastUpdatedAt(new Date());
       } catch (unknownError) {
         if (!isAbortError(unknownError)) {
           setError(messageFromError(unknownError));
-          setData({ board: null });
+          setData({ board: null, graph: null });
         }
       } finally {
         if (signal?.aborted !== true) {
@@ -197,7 +209,7 @@ function App() {
     setSelectedEntityId(null);
 
     if (selectedProjectId === null) {
-      setData({ board: null });
+      setData({ board: null, graph: null });
       return;
     }
 
@@ -319,8 +331,11 @@ function App() {
             board={data.board}
             collapsed={collapsed}
             counts={counts}
+            graph={data.graph}
             isLoading={isLoadingProjects || isLoadingProjectData}
             onOpenEntity={openEntity}
+            preferences={preferences}
+            projectId={selectedProjectId}
             showIds={preferences.showIds}
             tab={tab}
             toggleCollapsed={toggleCollapsed}
@@ -539,8 +554,11 @@ function ActiveView({
   board,
   collapsed,
   counts,
+  graph,
   isLoading,
   onOpenEntity,
+  preferences,
+  projectId,
   showIds,
   tab,
   toggleCollapsed
@@ -548,8 +566,11 @@ function ActiveView({
   board: BoardResponse | null;
   collapsed: Set<string>;
   counts: BoardCounts;
+  graph: GraphResponse | null;
   isLoading: boolean;
   onOpenEntity(id: EntityId): void;
+  preferences: ViewerPreferences;
+  projectId: ProjectId | null;
   showIds: boolean;
   tab: ViewerTab;
   toggleCollapsed(id: string): void;
@@ -582,8 +603,383 @@ function ActiveView({
     case "blocked":
       return <BlockedView board={board} onOpenEntity={onOpenEntity} showIds={showIds} />;
     case "graph":
-      return <EmptyState title="Graph" body="Dependency graph data is available from the read API." />;
+      if (graph === null) {
+        return <EmptyState title="Graph unavailable" body="Dependency graph data could not be loaded from the read API." />;
+      }
+
+      return <GraphView board={board} graph={graph} onOpenEntity={onOpenEntity} preferences={preferences} projectId={projectId} />;
   }
+}
+
+/** Render the read-only dependency graph tab in canonical Mermaid mode. */
+function GraphView({
+  board,
+  graph,
+  onOpenEntity,
+  preferences,
+  projectId
+}: {
+  board: BoardResponse;
+  graph: GraphResponse;
+  onOpenEntity(id: EntityId): void;
+  preferences: ViewerPreferences;
+  projectId: ProjectId | null;
+}) {
+  const [scope, setScope] = useState<GraphScope>({ type: "full" });
+  const [activeStatuses, setActiveStatuses] = useState<Set<GraphDisplayStatus>>(() => new Set(GRAPH_STATUS_ORDER));
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const scopeRef = useRef<HTMLDivElement | null>(null);
+  const graphModel = useMemo(() => buildTaskGraph(board, graph, scope), [board, graph, scope]);
+  const visibleGraph = useMemo(() => filterGraphByStatus(graphModel, activeStatuses), [activeStatuses, graphModel]);
+  const statusCounts = useMemo(() => graphStatusCounts(graphModel), [graphModel]);
+  const dense = graphModel.totalTasks > 30 && scope.type === "full";
+
+  /**
+   * Reset graph-local controls when the server project payload changes underneath the current tab.
+   */
+  useEffect(() => {
+    setScope({ type: "full" });
+    setActiveStatuses(new Set(GRAPH_STATUS_ORDER));
+    setScopeOpen(false);
+  }, [projectId]);
+
+  /** Close the scope popover on outside clicks without adding any write interaction. */
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (scopeRef.current !== null && !scopeRef.current.contains(event.target as Node)) {
+        setScopeOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
+
+  const toggleStatus = useCallback((status: GraphDisplayStatus) => {
+    setActiveStatuses((currentStatuses) => {
+      const nextStatuses = new Set(currentStatuses);
+      if (nextStatuses.has(status)) {
+        nextStatuses.delete(status);
+      } else {
+        nextStatuses.add(status);
+      }
+      return nextStatuses;
+    });
+  }, []);
+
+  const scopeLabel = scope.type === "full" ? "Full graph" : `${scope.id} subgraph`;
+  const emptyTitle = graphModel.totalTasks === 0 ? "No tasks to graph yet" : "No tasks match the current filters";
+  const emptyBody =
+    graphModel.totalTasks === 0
+      ? scope.type === "epic"
+        ? "This epic has no active task nodes in the dependency graph."
+        : "Once this project has active tasks, their dependency graph will render here automatically."
+      : "Re-enable one or more status filters to show nodes in the Mermaid diagram.";
+
+  return (
+    <div className="graph-view">
+      <div className="graph-toolbar">
+        <div className="segmented-control" aria-label="Graph mode">
+          <button className="segment segment-active" type="button" aria-pressed="true">
+            Mermaid
+          </button>
+          <button className="segment" type="button" aria-pressed="false" disabled title="Interactive graph is implemented by a separate task.">
+            Interactive
+          </button>
+        </div>
+
+        <div className="graph-scope" ref={scopeRef}>
+          <button
+            className="scope-trigger"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={scopeOpen}
+            onClick={() => setScopeOpen((wasOpen) => !wasOpen)}
+          >
+            <GraphIcon />
+            <span>{scopeLabel}</span>
+            <ChevronDown open={scopeOpen} />
+          </button>
+          {scopeOpen ? (
+            <div className="scope-menu scroll" role="menu">
+              <ScopeOption
+                active={scope.type === "full"}
+                label="Full graph"
+                meta={`${graphModel.totalTasks} tasks`}
+                onClick={() => {
+                  setScope({ type: "full" });
+                  setScopeOpen(false);
+                }}
+              />
+              <div className="scope-divider" />
+              <div className="menu-label">Per epic</div>
+              {graphModel.epics.map((epic) => (
+                <ScopeOption
+                  active={scope.type === "epic" && scope.id === epic.id}
+                  key={epic.id}
+                  label={epic.id}
+                  meta={`${epic.taskCount} tasks . ${epic.title}`}
+                  onClick={() => {
+                    setScope({ type: "epic", id: epic.id });
+                    setScopeOpen(false);
+                  }}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <span className="graph-toolbar-divider" aria-hidden="true" />
+
+        <div className="status-filter-row" aria-label="Graph status filters">
+          {GRAPH_STATUS_ORDER.map((status) => (
+            <StatusFilterChip
+              active={activeStatuses.has(status)}
+              count={statusCounts[status]}
+              key={status}
+              status={status}
+              onToggle={() => toggleStatus(status)}
+            />
+          ))}
+        </div>
+      </div>
+
+      {dense ? (
+        <div className="graph-density-hint">
+          <InfoIcon />
+          <span>
+            This project has <strong>{graphModel.totalTasks} tasks</strong>. Use the scope selector to inspect one epic at a time.
+          </span>
+        </div>
+      ) : null}
+
+      <div className="graph-canvas">
+        {visibleGraph.entities.length === 0 ? (
+          <GraphEmpty title={emptyTitle} body={emptyBody} />
+        ) : (
+          <MermaidGraph
+            accent={preferences.accent}
+            dark={preferences.dark}
+            graph={visibleGraph}
+            onOpenEntity={onOpenEntity}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Render one graph scope selector option without mutating project state. */
+function ScopeOption({
+  active,
+  label,
+  meta,
+  onClick
+}: {
+  active: boolean;
+  label: string;
+  meta: string;
+  onClick(): void;
+}) {
+  return (
+    <button className={active ? "scope-option scope-option-active" : "scope-option"} type="button" role="menuitemradio" aria-checked={active} onClick={onClick}>
+      <span className="scope-option-id">{label}</span>
+      <span className="scope-option-meta">{meta}</span>
+    </button>
+  );
+}
+
+/** Render a status filter chip whose colors match the Mermaid status contract. */
+function StatusFilterChip({
+  active,
+  count,
+  status,
+  onToggle
+}: {
+  active: boolean;
+  count: number;
+  status: GraphDisplayStatus;
+  onToggle(): void;
+}) {
+  return (
+    <button
+      className={active ? `status-filter status-filter-${status} status-filter-active` : `status-filter status-filter-${status}`}
+      type="button"
+      aria-pressed={active}
+      onClick={onToggle}
+    >
+      <span className="status-filter-dot" aria-hidden="true" />
+      <span>{status}</span>
+      <span className="status-filter-count">{count}</span>
+    </button>
+  );
+}
+
+/** Render Mermaid SVG from the scoped graph and attach drawer navigation to task nodes. */
+function MermaidGraph({
+  accent,
+  dark,
+  graph,
+  onOpenEntity
+}: {
+  accent: string;
+  dark: boolean;
+  graph: GraphViewModel;
+  onOpenEntity(id: EntityId): void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const mermaidId = useMemo(() => `mmd-${Math.random().toString(36).slice(2, 10)}`, []);
+  const definition = useMemo(() => toMermaid(graph.entities, graph.edges), [graph]);
+
+  /**
+   * Mermaid owns the SVG DOM. After render, this hook binds read-only node navigation into the
+   * existing drawer rather than introducing any graph mutation control.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const rootStyle = getComputedStyle(document.documentElement);
+
+    async function renderMermaid() {
+      const mermaidModule = await import("mermaid");
+      const renderer = mermaidModule.default;
+
+      renderer.initialize({
+        startOnLoad: false,
+        securityLevel: "loose",
+        theme: "base",
+        fontFamily: rootStyle.getPropertyValue("--font-sans") || "sans-serif",
+        themeVariables: {
+          background: "transparent",
+          fontSize: "13px",
+          lineColor: dark ? "#8b949e" : "#8c959f",
+          primaryColor: "transparent",
+          primaryBorderColor: accent,
+          primaryTextColor: dark ? "#e6edf3" : "#1f2328"
+        },
+        flowchart: {
+          curve: "basis",
+          htmlLabels: true,
+          nodeSpacing: 38,
+          rankSpacing: 64,
+          useMaxWidth: false
+        }
+      });
+
+      const { svg, bindFunctions } = await renderer.render(mermaidId, definition);
+
+      return { svg, bindFunctions };
+    }
+
+    renderMermaid()
+      .then(({ svg, bindFunctions }) => {
+        if (cancelled || containerRef.current === null) {
+          return;
+        }
+
+        containerRef.current.innerHTML = svg;
+        bindFunctions?.(containerRef.current);
+        bindMermaidNodeClicks(containerRef.current, graph.entities, onOpenEntity);
+        setRenderError(null);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setRenderError(messageFromError(error));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accent, dark, definition, graph.entities, mermaidId, onOpenEntity]);
+
+  if (renderError !== null) {
+    return <div className="graph-render-error">Mermaid render error: {renderError}</div>;
+  }
+
+  return (
+    <div className="mermaid-scroll scroll">
+      <div className="mermaid-output" ref={containerRef} aria-label="Task dependency Mermaid graph" />
+    </div>
+  );
+}
+
+/** Render the Graph tab's empty-state icon and copy. */
+function GraphEmpty({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="graph-empty">
+      <span className="empty-icon" aria-hidden="true">
+        <GraphIcon large />
+      </span>
+      <strong>{title}</strong>
+      <p>{body}</p>
+    </div>
+  );
+}
+
+/** Return a filtered graph for Mermaid mode, dropping edges whose endpoints are hidden. */
+function filterGraphByStatus(graph: GraphViewModel, activeStatuses: Set<GraphDisplayStatus>): GraphViewModel {
+  const entities = graph.entities.filter((entity) => activeStatuses.has(graphDisplayStatus(entity.effectiveStatus)));
+  const visibleIds = new Set(entities.map((entity) => entity.id));
+
+  return {
+    ...graph,
+    entities,
+    edges: graph.edges.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to))
+  };
+}
+
+/** Count scoped task nodes by the four graph palette statuses. */
+function graphStatusCounts(graph: GraphViewModel): Record<GraphDisplayStatus, number> {
+  const counts: Record<GraphDisplayStatus, number> = {
+    blocked: 0,
+    done: 0,
+    "in-progress": 0,
+    todo: 0
+  };
+
+  for (const entity of graph.entities) {
+    counts[graphDisplayStatus(entity.effectiveStatus)] += 1;
+  }
+
+  return counts;
+}
+
+/** Attach pointer and keyboard handlers to Mermaid node groups after SVG generation. */
+function bindMermaidNodeClicks(root: HTMLElement, entities: ReadonlyArray<{ id: EntityId }>, onOpenEntity: (id: EntityId) => void): void {
+  const keyToId = new Map(entities.map((entity) => [mermaidNodeKey(entity.id), entity.id]));
+
+  root.querySelectorAll<SVGGElement>("g.node").forEach((node) => {
+    const nodeId = mermaidNodeId(node.id);
+    const entityId = nodeId === null ? null : keyToId.get(nodeId) ?? null;
+
+    if (entityId === null) {
+      return;
+    }
+
+    node.style.cursor = "pointer";
+    node.setAttribute("role", "button");
+    node.setAttribute("tabindex", "0");
+    node.setAttribute("aria-label", `Open ${entityId}`);
+    node.addEventListener("click", () => onOpenEntity(entityId));
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onOpenEntity(entityId);
+      }
+    });
+  });
+}
+
+/** Convert an entity id to the same Mermaid-safe key used by `toMermaid`. */
+function mermaidNodeKey(id: EntityId): string {
+  const sanitized = id.replace(/[^A-Za-z0-9]/g, "");
+  return `n${sanitized.length === 0 ? "node" : sanitized}`;
+}
+
+/** Extract the generated Mermaid node key from current Mermaid flowchart group ids. */
+function mermaidNodeId(id: string): string | null {
+  return id.match(/flowchart-(n[A-Za-z0-9]+)-/)?.[1] ?? null;
 }
 
 /** Render the current hierarchy slice using the final row tokens and local collapse state. */
@@ -1484,6 +1880,28 @@ function BoardIcon() {
     <svg className="icon icon-large" viewBox="0 0 20 20" aria-hidden="true">
       <rect x="3" y="3" width="14" height="14" rx="3" fill="none" stroke="currentColor" />
       <path d="M7 8h6M7 12h4" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline graph icon used by graph scope controls and empty states. */
+function GraphIcon({ large = false }: { large?: boolean }) {
+  return (
+    <svg className={large ? "icon icon-large" : "icon"} viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="5" cy="10" r="2.2" fill="none" stroke="currentColor" />
+      <circle cx="15" cy="5" r="2.2" fill="none" stroke="currentColor" />
+      <circle cx="15" cy="15" r="2.2" fill="none" stroke="currentColor" />
+      <path d="M7.1 9.1 12.9 5.9M7.1 10.9 12.9 14.1" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline info icon for the large-graph density hint. */
+function InfoIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" />
+      <path d="M8 7.2v4M8 4.8h.01" fill="none" stroke="currentColor" strokeLinecap="round" />
     </svg>
   );
 }

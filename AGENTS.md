@@ -218,6 +218,41 @@ Testing should cover:
 - Watcher discovery and write suppression.
 - Read-only UI behavior.
 
+### Efficient UI Browser Testing
+
+After significant React viewer changes, verify the UI in a browser, but keep the setup small and deterministic.
+
+Use package checks first:
+
+- `npm run lint -w @file-kanban/ui`
+- `npm test -w @file-kanban/ui`
+- `npm run build -w @file-kanban/ui`
+
+For visual/runtime smoke tests, prefer serving the built UI from `packages/ui/dist` with a tiny same-origin read-only mock API instead of trying to stand up the full MCP/server stack when the repo has no `.worktracker` fixture project. The UI client uses same-origin relative paths by default, so a mock server must serve both `index.html`/assets and these GET endpoints:
+
+- `GET /api/projects`
+- `GET /api/:project/board`
+- `GET /api/:project/graph`
+- `GET /api/:project/entity/:id`
+- optionally `GET /api/:project/mermaid/:view`
+
+Keep mock servers and scripts out of the repo. Put temporary scripts under `C:\tmp`, write PID/log files only as short-lived local verification scratch files, and remove them before finishing. Always stop background dev/mock servers before the final response. If checking a port on Windows requires elevation, use `Get-NetTCPConnection -LocalPort <port> -State Listen` with approval and stop only the specific verification process you started.
+
+Do not use Vite alone for API-backed UI checks unless the real server or a proxy is also running; the Vite dev server serves the app but does not provide the viewer API. For same-origin API smoke tests, either run the real HTTP viewer server with a real discovered project or serve `packages/ui/dist` from a small read-only mock API server.
+
+When using the Browser plugin, try the in-app Browser first for localhost verification. If the in-app Browser reports `ERR_BLOCKED_BY_CLIENT` for an ad-hoc mock origin, record that fact and use the Playwright fallback to verify the local page. This happened with a Node mock server on `127.0.0.1`/`localhost`, while Vite itself could load; do not spend time repeatedly retrying the blocked mock origin.
+
+For Graph/Mermaid UI smoke tests, use targeted DOM assertions instead of manual inspection:
+
+- Click the `Graph` tab with exact accessible name matching (`getByRole('button', { name: 'Graph', exact: true })`) because graph-related row text can make a non-exact `Graph` locator ambiguous.
+- Assert `.graph-toolbar` exists and includes the Mermaid mode, scope selector, and status filter chips.
+- Assert `.mermaid-output svg` exists.
+- Assert `.mermaid-output g.node` count matches the mocked task graph.
+- Assert node groups have `aria-label="Open T-..."` and dispatching/clicking a node opens `.entity-drawer`.
+- Assert the drawer title/body matches the selected entity and no mutation controls appear.
+
+For Mermaid dependency changes, expect Vite to warn about large lazy Mermaid chunks during production builds. Treat that warning as informational when the build exits successfully; only investigate if the main app bundle grows unexpectedly or the build fails.
+
 ## Editing Discipline
 
 Keep changes scoped to the active kanban task.

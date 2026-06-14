@@ -729,6 +729,322 @@ button:disabled {
   white-space: nowrap;
 }
 
+.graph-view {
+  display: flex;
+  min-height: 560px;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+}
+
+.segmented-control {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--canvas);
+  padding: 2px;
+}
+
+.segment {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 5px 12px;
+}
+
+.segment-active {
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.graph-scope {
+  position: relative;
+}
+
+.scope-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12.5px;
+  padding: 6px 10px;
+}
+
+.scope-trigger:hover,
+.scope-trigger[aria-expanded="true"] {
+  background: var(--hover);
+}
+
+.scope-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: min(320px, calc(100vw - 56px));
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--elevated);
+  box-shadow: var(--shadow);
+  padding: 5px;
+}
+
+.scope-divider {
+  height: 1px;
+  background: var(--border-soft);
+  margin: 5px 8px;
+}
+
+.scope-option {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.scope-option:hover {
+  background: var(--hover);
+}
+
+.scope-option-active,
+.scope-option-active:hover {
+  background: var(--accent-soft);
+}
+
+.scope-option-id,
+.scope-option-meta,
+.status-filter-count {
+  font-family: var(--font-mono);
+}
+
+.scope-option-id {
+  min-width: 58px;
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scope-option-active .scope-option-id {
+  color: var(--accent);
+}
+
+.scope-option-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  flex: 1 1 auto;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border-soft);
+}
+
+.status-filter-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+}
+
+.status-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 20px;
+  opacity: 0.65;
+  padding: 1px 9px 1px 8px;
+  text-decoration: line-through;
+  text-decoration-color: var(--fg-faint);
+}
+
+.status-filter-active {
+  opacity: 1;
+  text-decoration: none;
+}
+
+.status-filter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--fg-faint);
+  flex: 0 0 auto;
+}
+
+.status-filter-count {
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.status-filter-todo.status-filter-active {
+  border-color: color-mix(in oklab, var(--todo-ink) 30%, transparent);
+  background: var(--todo-fill);
+  color: var(--todo-ink);
+}
+
+.status-filter-todo.status-filter-active .status-filter-dot {
+  background: var(--todo-ink);
+}
+
+.status-filter-in-progress.status-filter-active {
+  border-color: color-mix(in oklab, var(--prog-ink) 30%, transparent);
+  background: var(--prog-fill);
+  color: var(--prog-ink);
+}
+
+.status-filter-in-progress.status-filter-active .status-filter-dot {
+  background: var(--prog-ink);
+}
+
+.status-filter-blocked.status-filter-active {
+  border-color: color-mix(in oklab, var(--block-ink) 30%, transparent);
+  background: var(--block-fill);
+  color: var(--block-ink);
+}
+
+.status-filter-blocked.status-filter-active .status-filter-dot {
+  background: var(--block-ink);
+}
+
+.status-filter-done.status-filter-active {
+  border-color: color-mix(in oklab, var(--done-ink) 30%, transparent);
+  background: var(--done-fill);
+  color: var(--done-ink);
+}
+
+.status-filter-done.status-filter-active .status-filter-dot {
+  background: var(--done-ink);
+}
+
+.graph-density-hint {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--accent-soft);
+  color: var(--fg);
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  line-height: 1.4;
+  padding: 8px 14px;
+}
+
+.graph-density-hint strong {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.graph-canvas {
+  position: relative;
+  display: flex;
+  min-height: 480px;
+  background: var(--canvas);
+  flex: 1 1 auto;
+}
+
+.mermaid-scroll {
+  width: 100%;
+  overflow: auto;
+  padding: 28px;
+}
+
+.mermaid-output {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid-output svg {
+  max-width: none !important;
+  height: auto;
+}
+
+.mermaid-output g.node {
+  outline: none;
+}
+
+.mermaid-output g.node:focus-visible {
+  filter: drop-shadow(0 0 0.35rem color-mix(in oklab, var(--accent) 55%, transparent));
+}
+
+.graph-render-error {
+  width: 100%;
+  color: var(--block-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 24px;
+}
+
+.graph-empty {
+  display: flex;
+  width: 100%;
+  min-height: 360px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  padding: 56px 24px;
+  text-align: center;
+}
+
+.graph-empty strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.graph-empty p {
+  max-width: 390px;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .row-detail {
   color: var(--fg-faint);
   flex: 0 0 auto;
