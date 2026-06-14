@@ -1553,6 +1553,20 @@ button:disabled {
   color: var(--fg);
 }
 
+.drawer-icon-button-confirmed,
+.drawer-icon-button-confirmed:hover {
+  border-color: color-mix(in srgb, var(--done-ink) 34%, transparent);
+  background: var(--done-fill);
+  color: var(--done-ink);
+}
+
+.drawer-icon-button-error,
+.drawer-icon-button-error:hover {
+  border-color: color-mix(in srgb, var(--block-ink) 34%, transparent);
+  background: var(--block-fill);
+  color: var(--block-ink);
+}
+
 .kind-chip,
 .drawer-archive-chip {
   border-radius: 6px;

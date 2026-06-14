@@ -31,6 +31,7 @@ import {
   ViewerApiError,
   createViewerApiClient
 } from "./api";
+import { copyCommitLabel, formatCommitLabel } from "./clipboard";
 import {
   blockedByNote,
   blockedTasks,
@@ -1882,10 +1883,13 @@ function EntityDrawer({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const currentId = stack.at(-1) ?? initialEntityId;
   const boardIndex = useMemo(() => (board === null ? null : indexBoard(board)), [board]);
+  const commitLabel = detail === null ? null : formatCommitLabel(detail);
 
   /**
    * Reset the local navigation stack when a different entity is selected outside the drawer.
@@ -1937,9 +1941,18 @@ function EntityDrawer({
       if (closeTimerRef.current !== null) {
         window.clearTimeout(closeTimerRef.current);
       }
+
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
     },
     []
   );
+
+  /** Reset the temporary copy feedback whenever drawer navigation changes the active label. */
+  useEffect(() => {
+    setCopyState("idle");
+  }, [commitLabel]);
 
   const close = useCallback(() => {
     setClosing(true);
@@ -1953,6 +1966,29 @@ function EntityDrawer({
   const back = useCallback(() => {
     setStack((currentStack) => (currentStack.length > 1 ? currentStack.slice(0, -1) : currentStack));
   }, []);
+
+  /**
+   * Copy an operator-friendly label without calling any project mutation endpoint or changing
+   * entity state. Native `<button>` semantics keep the action keyboard-accessible.
+   */
+  const copyCurrentCommitLabel = useCallback(async () => {
+    if (detail === null) {
+      return;
+    }
+
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+
+    try {
+      await copyCommitLabel(detail, navigator.clipboard);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+
+    copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), 1800);
+  }, [detail]);
 
   /**
    * Match the prototype keyboard model: Escape closes; Backspace walks relation history first.
@@ -2001,6 +2037,23 @@ function EntityDrawer({
             <span className="kind-chip">{detail === null ? "Entity" : kindLabel(detail.type)}</span>
             {detail?.archived === true ? <span className="drawer-archive-chip">Archived</span> : null}
             <span className="row-spacer" />
+            {commitLabel === null ? null : (
+              <button
+                className={
+                  copyState === "copied"
+                    ? "drawer-icon-button drawer-icon-button-confirmed"
+                    : copyState === "failed"
+                      ? "drawer-icon-button drawer-icon-button-error"
+                      : "drawer-icon-button"
+                }
+                type="button"
+                title={copyState === "copied" ? `Copied ${commitLabel}` : `Copy commit label ${commitLabel}`}
+                aria-label={`Copy commit label ${commitLabel}`}
+                onClick={copyCurrentCommitLabel}
+              >
+                <CopyIcon />
+              </button>
+            )}
             <button className="drawer-icon-button" type="button" title="Close (Esc)" onClick={close}>
               <CloseIcon />
             </button>
@@ -2422,6 +2475,16 @@ function BackIcon() {
   return (
     <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
       <path d="M10 3.5 L5.5 8 L10 12.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Inline icon for copying the drawer commit label to the clipboard. */
+function CopyIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="5.2" y="4.2" width="7.2" height="8.3" rx="1.3" fill="none" stroke="currentColor" />
+      <path d="M3.6 10.9V3.8c0-.7.5-1.2 1.2-1.2h5.8" fill="none" stroke="currentColor" strokeLinecap="round" />
     </svg>
   );
 }
