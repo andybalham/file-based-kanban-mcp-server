@@ -12,7 +12,9 @@
     "build": "tsc -b packages/core packages/server && npm run build -w @file-kanban/ui",
     "lint": "tsc -p packages/core/tsconfig.json --noEmit && tsc -p packages/server/tsconfig.json --noEmit && npm run lint -w @file-kanban/ui",
     "test": "npm run build && npm run test:built --workspaces --if-present",
-    "check:phase0": "npm run lint && npm test"
+    "check:phase0": "npm run lint && npm test",
+    "viewer": "npm run build && npm run viewer -w @file-kanban/server",
+    "viewer:built": "npm run viewer -w @file-kanban/server"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

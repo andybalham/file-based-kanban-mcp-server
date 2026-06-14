@@ -43,8 +43,9 @@ a fresh build first; package-level `npm test -w <workspace>` does the same for f
 against the existing build output.
 
 The package currently exposes the MCP stdio binary as `file-kanban-mcp` from
-`@file-kanban/server`. During local development, build first so the binary and package entrypoints
-exist under `packages/server/dist/`.
+`@file-kanban/server` and the read-only viewer binary as `file-kanban-viewer`. During local
+development, build first so the binaries and package entrypoints exist under
+`packages/server/dist/`.
 
 ## Run The MCP Server
 
@@ -144,6 +145,27 @@ $env:FILE_KANBAN_GIT = "false"
 ```
 
 More operational detail is in `docs/operator-workflows.md`.
+
+## Run The Read-Only Viewer
+
+The viewer command builds the server and React UI, discovers projects from `FILE_KANBAN_WATCH_ROOTS`,
+then serves the read-only HTTP/WebSocket API and built UI on `FILE_KANBAN_PORT`:
+
+```powershell
+$env:FILE_KANBAN_WATCH_ROOTS = "C:\src"
+$env:FILE_KANBAN_PORT = "4000"
+npm run viewer
+```
+
+For faster iteration after a successful build, run the already-built server entrypoint:
+
+```powershell
+npm run viewer:built
+```
+
+The underlying package bin is also available as `.\node_modules\.bin\file-kanban-viewer.cmd` on
+Windows or `./node_modules/.bin/file-kanban-viewer` on POSIX shells. The command prints the local
+URL to open and remains read-only; all project mutations still go through MCP tools.
 
 ## Data Model
 

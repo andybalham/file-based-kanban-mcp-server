@@ -6,13 +6,15 @@
   "main": "dist/main.js",
   "types": "dist/main.d.ts",
   "bin": {
-    "file-kanban-mcp": "dist/stdio.js"
+    "file-kanban-mcp": "dist/stdio.js",
+    "file-kanban-viewer": "dist/viewer.js"
   },
   "scripts": {
     "build": "tsc -b",
     "lint": "tsc -b --noEmit",
     "test": "npm run build && npm run test:built",
-    "test:built": "node --test"
+    "test:built": "node --test",
+    "viewer": "node dist/viewer.js"
   },
   "dependencies": {
     "@file-kanban/core": "0.0.0",

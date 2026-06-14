@@ -375,6 +375,37 @@ package. It serves read-only project data over:
 The React UI consumes those endpoints and must remain read-only. It should not expose mutation
 controls, browser write endpoints, drag-to-reorder behavior, or optimistic status updates.
 
+From the repository root, build and start the viewer with one command:
+
+```powershell
+$env:FILE_KANBAN_WATCH_ROOTS = "C:\Users\me\source"
+$env:FILE_KANBAN_PORT = "4000"
+npm run viewer
+```
+
+`npm run viewer` performs a fresh workspace build before launching
+`@file-kanban/server`'s `file-kanban-viewer` entrypoint. When the current `dist` artifacts are
+already known to be fresh, use the shorter built-artifact command:
+
+```powershell
+npm run viewer:built
+```
+
+The package binary can also be launched directly after a build:
+
+```powershell
+.\node_modules\.bin\file-kanban-viewer.cmd
+```
+
+On POSIX shells, use the generated bin shim:
+
+```sh
+./node_modules/.bin/file-kanban-viewer
+```
+
+The command prints the local URL it is listening on and the watch roots it discovered from the
+runtime environment. Stop it with `Ctrl+C`; shutdown closes the watcher and HTTP listener.
+
 ## Single-Writer Operation
 
 Run at most one mutating MCP stdio process against a given project at a time. The design assumes a
