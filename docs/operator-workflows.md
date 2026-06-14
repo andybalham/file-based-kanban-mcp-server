@@ -27,6 +27,11 @@ npm test -w @file-kanban/ui
 npm run lint -w @file-kanban/ui
 ```
 
+Tests intentionally exercise compiled package artifacts because the public entrypoints and MCP
+stdio binary are emitted under `dist`. Root `npm test` and package-level `npm test -w <workspace>`
+build before executing tests. The `test:built` scripts are reserved for orchestration after a fresh
+build has already completed.
+
 ## Configure The Runtime
 
 Configuration is environment-based so the same build can serve different repositories. The Phase 8

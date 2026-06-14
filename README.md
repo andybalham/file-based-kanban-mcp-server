@@ -36,6 +36,12 @@ npm run lint
 npm test
 ```
 
+The test suite imports compiled package entrypoints under `dist` and UI type output under
+`dist-types` to verify the built artifacts agents and operators actually run. `npm test` performs
+a fresh build first; package-level `npm test -w <workspace>` does the same for focused work. Use
+`test:built` only when a fresh build has already completed and you intentionally want to run tests
+against the existing build output.
+
 The package currently exposes the MCP stdio binary as `file-kanban-mcp` from
 `@file-kanban/server`. During local development, build first so the binary and package entrypoints
 exist under `packages/server/dist/`.

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -b && vite build",
     "lint": "tsc -b --noEmit",
-    "test": "node --test",
+    "test": "npm run build && npm run test:built",
+    "test:built": "node --test",
     "dev": "vite"
   },
   "dependencies": {
