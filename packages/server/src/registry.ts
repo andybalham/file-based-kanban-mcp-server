@@ -19,7 +19,7 @@ const ENTITIES_DIR = path.join(".worktracker", "entities");
  * MCP tools, resources, HTTP handlers, and future watcher code should branch on these codes
  * instead of parsing human-readable error messages.
  */
-export type RegistryErrorCode = "AMBIGUOUS_PROJECT" | "PROJECT_NOT_FOUND";
+export type RegistryErrorCode = "AMBIGUOUS_PROJECT" | "PROJECT_NOT_FOUND" | "INVALID_ROOT";
 
 /**
  * Public project list item returned by registry discovery surfaces.
@@ -207,7 +207,11 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   private readonly projectsByRoot = new Map<string, ProjectState>();
 
   /**
-   * Watch roots are retained for future boot discovery and watcher wiring.
+   * Watch roots are retained for boot discovery, watcher wiring, and init containment checks.
+   *
+   * The registry normalizes these once so every init call is compared against the same absolute
+   * representation used by discovery. Keeping this check at the registry boundary protects all
+   * callers, including stdio, tests, and future composed hosts.
    */
   private readonly watchRoots: string[];
 
@@ -230,7 +234,7 @@ class InMemoryProjectRegistry implements ProjectRegistry {
    * Seed the registry with already-built project states.
    */
   constructor(options: CreateProjectRegistryOptions) {
-    this.watchRoots = [...options.watchRoots];
+    this.watchRoots = options.watchRoots.map((watchRoot) => path.resolve(watchRoot));
     this.buildProjectState = options.buildProjectState ?? buildProjectStateFromCore;
     this.createProjectId = options.createProjectId ?? createRandomProjectId;
     this.now = options.now ?? (() => new Date());
@@ -306,6 +310,8 @@ class InMemoryProjectRegistry implements ProjectRegistry {
    */
   async init(args: InitProjectArgs): Promise<InitProjectResult> {
     const root = path.resolve(args.root);
+    this.assertInitRootWithinWatchRoots(root);
+
     const existingMarker = await readMarker(root);
 
     if (existingMarker !== null) {
@@ -383,6 +389,28 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   private async ensureEntityDirectory(root: string): Promise<void> {
     await fs.mkdir(path.join(root, ENTITIES_DIR), { recursive: true });
   }
+
+  /**
+   * Reject init attempts outside the configured discovery boundary before any filesystem write.
+   *
+   * `init` creates durable project metadata, so accepting arbitrary roots would let one MCP process
+   * mutate repositories it is not configured to discover or watch. The comparison treats a watch
+   * root itself as valid and also accepts descendants after resolving `.`/`..` segments and trailing
+   * separators. On Windows, path comparison is case-insensitive to match filesystem semantics.
+   */
+  private assertInitRootWithinWatchRoots(root: string): void {
+    const comparableRoot = comparablePath(root);
+    const matchingWatchRoot = this.watchRoots.find((watchRoot) => isSameOrDescendantPath(comparableRoot, comparablePath(watchRoot)));
+
+    if (matchingWatchRoot !== undefined) {
+      return;
+    }
+
+    throw new RegistryError(
+      "INVALID_ROOT",
+      `Init root '${root}' must be inside one configured watch root. Configured watch roots: ${this.watchRoots.join(", ")}.`
+    );
+  }
 }
 
 /**
@@ -405,4 +433,23 @@ async function buildProjectStateFromCore(root: string, marker: ProjectMarker): P
  */
 function createRandomProjectId(): ProjectId {
   return `wt_${randomBytes(4).toString("hex")}`;
+}
+
+/**
+ * Normalize a path for containment comparisons while preserving the platform path module rules.
+ */
+function comparablePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * Return true when `candidate` is exactly `ancestor` or a filesystem descendant of it.
+ *
+ * `path.relative` is used instead of string prefix checks so sibling paths such as
+ * `C:\repos\watch-other` cannot satisfy containment for `C:\repos\watch`.
+ */
+function isSameOrDescendantPath(candidate: string, ancestor: string): boolean {
+  const relativePath = path.relative(ancestor, candidate);
+  return relativePath === "" || (relativePath.length > 0 && !relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }

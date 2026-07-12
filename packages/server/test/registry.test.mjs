@@ -145,7 +145,7 @@ test("resolveProject raises PROJECT_NOT_FOUND when no projects are registered", 
 test("init creates a marker, seeds requirements once, scans, and registers synchronously", async () => {
   const root = await makeTempRoot("file-kanban-registry-init-");
   const registry = createProjectRegistry({
-    watchRoots: [],
+    watchRoots: [root],
     createProjectId: () => "wt_test_init",
     now: () => new Date("2026-06-07T12:00:00Z")
   });
@@ -184,7 +184,7 @@ test("init on an already marked root returns the existing id and does not reseed
   await fs.writeFile(requirementsPath, "Human-authored requirements", "utf8");
 
   const registry = createProjectRegistry({
-    watchRoots: [],
+    watchRoots: [root],
     createProjectId: () => "wt_should_not_be_used",
     now: () => new Date("2026-06-07T12:00:00Z")
   });
@@ -199,6 +199,55 @@ test("init on an already marked root returns the existing id and does not reseed
   );
   assert.equal(await readText(requirementsPath), "Human-authored requirements");
   assert.equal(registry.resolveProject("wt_existing").marker.title, "Existing Project");
+});
+
+test("init rejects roots outside configured watch roots before mutating files or registry state", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-watch-root-");
+  const outsideRoot = await makeTempRoot("file-kanban-registry-outside-init-");
+  const registry = createProjectRegistry({
+    watchRoots: [watchRoot],
+    createProjectId: () => "wt_should_not_write",
+    now: () => new Date("2026-06-07T12:00:00Z")
+  });
+
+  await assert.rejects(
+    () => registry.init({ root: outsideRoot, title: "Outside Project", intent: "Should not be seeded" }),
+    (error) =>
+      error instanceof RegistryError &&
+      error.code === "INVALID_ROOT" &&
+      error.message ===
+        `Init root '${path.resolve(outsideRoot)}' must be inside one configured watch root. Configured watch roots: ${path.resolve(watchRoot)}.`
+  );
+
+  assert.equal(await pathExists(path.join(outsideRoot, ".worktracker", "project.json")), false);
+  assert.equal(await pathExists(path.join(outsideRoot, ".worktracker", "requirements", "source.md")), false);
+  assert.throws(
+    () => registry.resolveProject("wt_should_not_write"),
+    (error) =>
+      error instanceof RegistryError &&
+      error.code === "PROJECT_NOT_FOUND" &&
+      error.projectId === "wt_should_not_write"
+  );
+});
+
+test("init accepts watch root descendants after normalizing relative segments and trailing separators", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-normalized-watch-");
+  const projectRoot = path.join(watchRoot, "nested", "repo");
+  const equivalentProjectRoot = path.join(projectRoot, "..", "repo", path.sep);
+  const registry = createProjectRegistry({
+    watchRoots: [path.join(watchRoot, ".")],
+    createProjectId: () => "wt_normalized_init",
+    now: () => new Date("2026-06-07T12:00:00Z")
+  });
+
+  await fs.mkdir(projectRoot, { recursive: true });
+
+  assert.deepEqual(await registry.init({ root: equivalentProjectRoot, title: "Normalized Init" }), {
+    projectId: "wt_normalized_init"
+  });
+
+  assert.equal(await pathExists(path.join(projectRoot, ".worktracker", "project.json")), true);
+  assert.equal(registry.resolveProject("wt_normalized_init").root, path.resolve(projectRoot));
 });
 
 test("discover registers pre-marked projects from watch roots without init", async () => {
