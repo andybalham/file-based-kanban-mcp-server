@@ -11,8 +11,6 @@ export const RUNTIME_CONFIG_ENV = {
   watchRoots: "FILE_KANBAN_WATCH_ROOTS",
   /** TCP port used by the read-only HTTP/WebSocket viewer server. */
   port: "FILE_KANBAN_PORT",
-  /** Optional root used by the stdio `init` tool when a process cwd is not the intended target. */
-  initRoot: "FILE_KANBAN_INIT_ROOT",
   /** Optional future gate for git side effects in the regeneration pipeline. */
   git: "FILE_KANBAN_GIT"
 } as const;
@@ -24,13 +22,6 @@ export const DEFAULT_HTTP_PORT = 4000;
  * Process-level configuration shared by stdio, HTTP, and watcher startup.
  */
 export interface RuntimeConfig {
-  /**
-   * Absolute root passed to the `init` tool.
-   *
-   * This is intentionally separate from `watchRoots`: a server process may initialize the current
-   * repository while also discovering projects across a broader parent folder.
-   */
-  initRoot: string;
   /**
    * Absolute folders watched recursively for project markers.
    *
@@ -53,7 +44,7 @@ export interface RuntimeConfig {
 export interface LoadRuntimeConfigOptions {
   /** Environment object to parse; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-  /** Working directory fallback for `initRoot` and default `watchRoots`. */
+  /** Working directory fallback for default `watchRoots`. */
   cwd?: string;
 }
 
@@ -89,11 +80,9 @@ export class RuntimeConfigError extends Error {
 export function loadRuntimeConfig(options: LoadRuntimeConfigOptions = {}): RuntimeConfig {
   const env = options.env ?? process.env;
   const cwd = path.resolve(options.cwd ?? process.cwd());
-  const initRoot = path.resolve(valueOrDefault(env[RUNTIME_CONFIG_ENV.initRoot], cwd));
-  const watchRoots = parseWatchRoots(env[RUNTIME_CONFIG_ENV.watchRoots], initRoot);
+  const watchRoots = parseWatchRoots(env[RUNTIME_CONFIG_ENV.watchRoots], cwd);
 
   return {
-    initRoot,
     watchRoots,
     port: parsePort(env[RUNTIME_CONFIG_ENV.port]),
     git: parseGitFlag(env[RUNTIME_CONFIG_ENV.git])
@@ -108,7 +97,7 @@ function valueOrDefault(value: string | undefined, fallback: string): string {
 }
 
 /**
- * Parse the required watch-root runtime value, applying the current init root as the local default.
+ * Parse the optional watch-root runtime value, applying the process cwd as the local default.
  */
 function parseWatchRoots(configured: string | undefined, fallbackRoot: string): string[] {
   const rawRoots =

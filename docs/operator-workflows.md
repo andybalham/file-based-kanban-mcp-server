@@ -40,9 +40,8 @@ viewer startup, boot-time project discovery, and watcher registration.
 
 | Variable | Valid values | Operational notes |
 | --- | --- | --- |
-| `FILE_KANBAN_WATCH_ROOTS` | One or more paths separated by the platform delimiter | Roots are resolved to absolute paths, de-duplicated, scanned recursively at startup, and watched for `.worktracker/project.json`. Discovery ignores heavy directories such as `.git`, `node_modules`, `dist`, `build`, and `coverage`. When unset or blank, the server uses `FILE_KANBAN_INIT_ROOT`; when that is also unset, it uses the process cwd. |
+| `FILE_KANBAN_WATCH_ROOTS` | One or more paths separated by the platform delimiter | Roots are resolved to absolute paths, de-duplicated, scanned recursively at startup, and watched for `.worktracker/project.json`. Discovery ignores heavy directories such as `.git`, `node_modules`, `dist`, `build`, and `coverage`. When unset or blank, the server uses the process cwd. |
 | `FILE_KANBAN_PORT` | Integer from `1` to `65535` | Controls the read-only HTTP/WebSocket viewer server port. Defaults to `4000`. Invalid values fail configuration loading before the viewer listens. |
-| `FILE_KANBAN_INIT_ROOT` | One path | Controls where MCP `init` creates or reuses `.worktracker/`. Defaults to the process cwd. |
 | `FILE_KANBAN_GIT` | `true`, `false`, `1`, `0`, `yes`, `no`, `on`, or `off` | Parsed for forward compatibility. Current mutation/regeneration code does not perform git commits. |
 
 On Windows, separate multiple watch roots with `;`:
@@ -61,9 +60,10 @@ Invalid ports, empty watch-root lists, and unrecognized git flags fail startup w
 configuration errors.
 
 `loadRuntimeConfig()` resolves this environment once per process startup. The stdio startup path
-uses `watchRoots` to discover already-marked projects and `initRoot` for the `init` tool. The
-HTTP/WebSocket viewer startup path uses `watchRoots` for both boot discovery and live marker/content
-watching, then listens on `port`.
+uses `watchRoots` to discover already-marked projects. The `init` tool requires a `root` argument,
+letting one stdio process initialize any repository selected by the client. The HTTP/WebSocket
+viewer startup path uses `watchRoots` for both boot discovery and live marker/content watching,
+then listens on `port`.
 
 ## Start MCP For An Agent
 
@@ -77,7 +77,6 @@ For a direct local smoke run on Windows, start the workspace bin after setting t
 environment:
 
 ```powershell
-$env:FILE_KANBAN_INIT_ROOT = "C:\Users\me\source\my-repo"
 $env:FILE_KANBAN_WATCH_ROOTS = "C:\Users\me\source"
 .\node_modules\.bin\file-kanban-mcp.cmd
 ```
@@ -85,7 +84,6 @@ $env:FILE_KANBAN_WATCH_ROOTS = "C:\Users\me\source"
 For a direct local smoke run on POSIX shells, use the generated bin shim:
 
 ```sh
-export FILE_KANBAN_INIT_ROOT="/home/me/src/my-repo"
 export FILE_KANBAN_WATCH_ROOTS="/home/me/src"
 ./node_modules/.bin/file-kanban-mcp
 ```
@@ -95,9 +93,9 @@ printing an HTTP URL. Stop it with the client shutdown flow or by sending `SIGIN
 
 Point the agent's MCP configuration at the built server binary or package bin. In this workspace,
 the package bin is `file-kanban-mcp` from `@file-kanban/server`, which resolves to
-`packages/server/dist/stdio.js` after build. Set `FILE_KANBAN_INIT_ROOT` to the repository the
-agent should initialize when it calls `init`. Set `FILE_KANBAN_WATCH_ROOTS` to the same repo, or to
-a parent directory that contains several managed repos.
+`packages/server/dist/stdio.js` after build. Set `FILE_KANBAN_WATCH_ROOTS` to a repository or to a
+parent directory that contains several managed repos. Pass the target repository as `root` when
+calling `init`.
 
 The MCP stdio server discovers existing projects at startup from `FILE_KANBAN_WATCH_ROOTS`.
 Every tool except `init` resolves an optional `projectId` against the in-memory registry. When more
@@ -120,7 +118,6 @@ JSON-style MCP clients such as Claude Desktop, Cursor, and many VS Code extensio
       "command": "C:\\Users\\me\\source\\file-based-kanban-mcp-server\\node_modules\\.bin\\file-kanban-mcp.cmd",
       "args": [],
       "env": {
-        "FILE_KANBAN_INIT_ROOT": "C:\\Users\\me\\source\\my-repo",
         "FILE_KANBAN_WATCH_ROOTS": "C:\\Users\\me\\source",
         "FILE_KANBAN_PORT": "4000",
         "FILE_KANBAN_GIT": "false"
@@ -142,7 +139,6 @@ portable option for clients that separate `command` and `args` strictly:
         "C:\\Users\\me\\source\\file-based-kanban-mcp-server\\packages\\server\\dist\\stdio.js"
       ],
       "env": {
-        "FILE_KANBAN_INIT_ROOT": "C:\\Users\\me\\source\\my-repo",
         "FILE_KANBAN_WATCH_ROOTS": "C:\\Users\\me\\source",
         "FILE_KANBAN_PORT": "4000"
       }
@@ -160,7 +156,6 @@ For POSIX clients, use forward-slash paths and the generated bin shim:
       "command": "/home/me/src/file-based-kanban-mcp-server/node_modules/.bin/file-kanban-mcp",
       "args": [],
       "env": {
-        "FILE_KANBAN_INIT_ROOT": "/home/me/src/my-repo",
         "FILE_KANBAN_WATCH_ROOTS": "/home/me/src",
         "FILE_KANBAN_PORT": "4000"
       }
@@ -177,7 +172,6 @@ command = "node"
 args = ["C:\\Users\\me\\source\\file-based-kanban-mcp-server\\packages\\server\\dist\\stdio.js"]
 
 [mcp_servers.file-kanban.env]
-FILE_KANBAN_INIT_ROOT = "C:\\Users\\me\\source\\my-repo"
 FILE_KANBAN_WATCH_ROOTS = "C:\\Users\\me\\source"
 FILE_KANBAN_PORT = "4000"
 FILE_KANBAN_GIT = "false"
@@ -202,8 +196,15 @@ Bootstrap a repository:
 
 ```text
 Use the file-kanban MCP server to initialize this repository as a project named "Checkout
-Modernization". Seed the requirements from docs/requirements.md if that file exists, then tell me
-the projectId.
+Modernization". Pass this repository's absolute path as the init root, seed the requirements from
+docs/requirements.md if that file exists, then tell me the projectId.
+```
+
+Bootstrap a specific repository from one shared MCP configuration:
+
+```text
+Use the file-kanban MCP server to initialize C:\Users\me\source\billing-service as a project named
+"Billing Service". Pass that directory as the init root and tell me the projectId.
 ```
 
 Discover existing work:

@@ -54,7 +54,6 @@ Use this minimal client shape when an example is useful:
       "command": "node",
       "args": ["C:\\path\\to\\file-based-kanban-mcp-server\\packages\\server\\dist\\stdio.js"],
       "env": {
-        "FILE_KANBAN_INIT_ROOT": "C:\\path\\to\\target-repo",
         "FILE_KANBAN_WATCH_ROOTS": "C:\\path\\to"
       }
     }
@@ -64,7 +63,6 @@ Use this minimal client shape when an example is useful:
 
 Key environment variables:
 
-- `FILE_KANBAN_INIT_ROOT`: repository root targeted by the MCP `init` tool.
 - `FILE_KANBAN_WATCH_ROOTS`: platform-delimited roots scanned for `.worktracker/project.json`
   markers and watched for project discovery.
 - `FILE_KANBAN_PORT`: read-only HTTP/WebSocket viewer port, defaulting to `4000`.
@@ -91,11 +89,11 @@ Keep the model compact in your working memory:
 
 ### Bootstrap A Repository
 
-Use `init` only when `.worktracker/project.json` is absent. It creates or reuses the marker,
-optionally seeds requirements, registers the project in the current server process, and returns
-the portable `projectId`. Keep that id in working context, read requirements if present, create
-epics/stories/tasks through MCP mutation tools, add only same-type dependencies, then call
-`validate`.
+Use `init` only when `.worktracker/project.json` is absent, and always pass the target repository as
+`root`. It creates or reuses the marker, optionally seeds requirements, registers the project in the
+current server process, and returns the portable `projectId`. Keep that id in working context, read
+requirements if present, create epics/stories/tasks through MCP mutation tools, add only same-type
+dependencies, then call `validate`.
 
 Discovery is marker-based. Use `list_projects` whenever the current project is unclear.
 

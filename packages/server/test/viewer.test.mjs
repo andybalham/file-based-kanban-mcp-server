@@ -22,7 +22,6 @@ test("viewer CLI starts the HTTP runtime and prints the operator URL", async () 
       return runtime;
     },
     config: {
-      initRoot: watchRoot,
       watchRoots: [watchRoot],
       port: 4321,
       git: false
@@ -33,7 +32,6 @@ test("viewer CLI starts the HTTP runtime and prints the operator URL", async () 
   assert.deepEqual(calls, [
     {
       config: {
-        initRoot: watchRoot,
         watchRoots: [watchRoot],
         port: 4321,
         git: false
@@ -51,7 +49,6 @@ test("viewerUrl preserves explicit loopback and IPv6 listener addresses", () => 
 function runtimeWithAddress(address, watchRoots = [path.resolve("viewer-root")]) {
   return {
     config: {
-      initRoot: watchRoots[0],
       watchRoots,
       port: address.port,
       git: false

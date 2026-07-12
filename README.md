@@ -54,7 +54,6 @@ repo or watch root you want the server to manage, then launch the `file-kanban-m
 
 ```powershell
 npm run build -w @file-kanban/server
-$env:FILE_KANBAN_INIT_ROOT = "C:\src\my-repo"
 $env:FILE_KANBAN_WATCH_ROOTS = "C:\src"
 .\node_modules\.bin\file-kanban-mcp.cmd
 ```
@@ -62,7 +61,7 @@ $env:FILE_KANBAN_WATCH_ROOTS = "C:\src"
 When an MCP client launches the server for you, configure the command as the built workspace bin
 and pass the same environment values through that client's MCP server configuration. The stdio
 process discovers already-initialized projects from `FILE_KANBAN_WATCH_ROOTS`; the `init` MCP tool
-targets `FILE_KANBAN_INIT_ROOT`.
+initializes the repository root supplied in the tool call.
 
 Most agent coding clients use one of these MCP stdio configuration shapes.
 
@@ -76,7 +75,6 @@ server map like this:
       "command": "C:\\src\\file-based-kanban-mcp-server\\node_modules\\.bin\\file-kanban-mcp.cmd",
       "args": [],
       "env": {
-        "FILE_KANBAN_INIT_ROOT": "C:\\src\\my-repo",
         "FILE_KANBAN_WATCH_ROOTS": "C:\\src",
         "FILE_KANBAN_PORT": "4000"
       }
@@ -95,7 +93,6 @@ Node instead:
       "command": "node",
       "args": ["C:\\src\\file-based-kanban-mcp-server\\packages\\server\\dist\\stdio.js"],
       "env": {
-        "FILE_KANBAN_INIT_ROOT": "C:\\src\\my-repo",
         "FILE_KANBAN_WATCH_ROOTS": "C:\\src"
       }
     }
@@ -126,19 +123,18 @@ discovery, the project watcher, and the HTTP/WebSocket viewer.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FILE_KANBAN_WATCH_ROOTS` | `FILE_KANBAN_INIT_ROOT`, or process cwd when `FILE_KANBAN_INIT_ROOT` is unset | Platform-delimited roots scanned at startup and watched for `.worktracker/project.json` markers. Use `;` on Windows and `:` on POSIX. Paths are resolved to absolute paths and duplicates are removed. |
+| `FILE_KANBAN_WATCH_ROOTS` | process cwd | Platform-delimited roots scanned at startup and watched for `.worktracker/project.json` markers. Use `;` on Windows and `:` on POSIX. Paths are resolved to absolute paths and duplicates are removed. |
 | `FILE_KANBAN_PORT` | `4000` | HTTP/WebSocket viewer listen port. Must be an integer from `1` to `65535`. |
-| `FILE_KANBAN_INIT_ROOT` | process cwd | Repository root targeted by the MCP `init` tool. |
 | `FILE_KANBAN_GIT` | `false` | Reserved git side-effect flag. The current implementation parses it but does not commit changes. |
 
-`runStdioServer()` uses the resolved `watchRoots` for startup discovery and `initRoot` for the
-MCP `init` tool. `runHttpViewerServer()` uses the same resolved `watchRoots` for boot discovery and
-live marker/content watching, and listens on the resolved `port`.
+`runStdioServer()` uses the resolved `watchRoots` for startup discovery. The MCP `init` tool
+requires a `root` argument so one stdio process can initialize any repository selected by the
+client. `runHttpViewerServer()` uses the same resolved `watchRoots` for boot discovery and live
+marker/content watching, and listens on the resolved `port`.
 
 Example Windows configuration:
 
 ```powershell
-$env:FILE_KANBAN_INIT_ROOT = "C:\src\my-repo"
 $env:FILE_KANBAN_WATCH_ROOTS = "C:\src;D:\work"
 $env:FILE_KANBAN_PORT = "4000"
 $env:FILE_KANBAN_GIT = "false"

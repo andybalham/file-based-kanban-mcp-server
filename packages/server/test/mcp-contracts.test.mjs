@@ -160,6 +160,7 @@ test("MCP tool definitions expose every design tool in deterministic order", () 
 
   assert.deepEqual(Object.keys(MCP_TOOL_DEFINITIONS), MCP_TOOL_NAMES);
   assert.equal(MCP_TOOL_DEFINITIONS.list_projects.mutates, false);
+  assert.deepEqual(MCP_TOOL_DEFINITIONS.init.inputFields, ["title", "intent", "root"]);
   assert.equal(MCP_TOOL_DEFINITIONS.link_dependency.mutates, true);
   assert.deepEqual(MCP_TOOL_DEFINITIONS.link_dependency.inputFields, ["projectId", "from", "to"]);
   assert.deepEqual(MCP_TOOL_DEFINITIONS.set_status.resultFields, ["id", "effectiveStatus", "changedFiles"]);
@@ -742,6 +743,12 @@ test("MCP integration reaches every structured error code through the public too
       }
     },
     {
+      code: "INVALID_ROOT",
+      run: async () => {
+        throw new McpAdapterError("INVALID_ROOT", "init requires a non-empty repository root.", { field: "root" });
+      }
+    },
+    {
       code: "NOT_A_PROJECT",
       run: async () => {
         const root = await makeTempRoot("file-kanban-mcp-error-not-project-");
@@ -784,6 +791,7 @@ test("MCP error code registry includes every structured design error", () => {
     "INVALID_STATUS",
     "AMBIGUOUS_PROJECT",
     "PROJECT_NOT_FOUND",
+    "INVALID_ROOT",
     "NOT_A_PROJECT"
   ]);
 

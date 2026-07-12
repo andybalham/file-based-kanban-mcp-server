@@ -18,7 +18,6 @@ test("stdio surface registers every design resource and tool deterministically",
 
   registerStdioMcpSurface(server, {
     registry: registryWithProjects([projectState("wt_stdio")]),
-    initRoot: path.join(os.tmpdir(), "file-kanban-stdio-init"),
     resourceTemplateFactory(key, template) {
       templates.push([key, template]);
       return { key, template };
@@ -47,8 +46,7 @@ test("stdio registered handlers return MCP resource and tool response envelopes"
   const project = projectState("wt_stdio_handlers");
 
   registerStdioMcpSurface(server, {
-    registry: registryWithProjects([project]),
-    initRoot: project.root
+    registry: registryWithProjects([project])
   });
 
   const projectList = await server.resource("projectList").handler(new URL("project://list"));
@@ -70,9 +68,9 @@ test("stdio registered handlers return MCP resource and tool response envelopes"
   assert.match(listProjects.content[0].text, /wt_stdio_handlers/);
 });
 
-test("stdio init handler targets the configured process root", async () => {
+test("stdio init handler targets the root supplied by the tool call", async () => {
   const server = new FakeMcpServer();
-  const initRoot = path.join(os.tmpdir(), "file-kanban-stdio-configured-root");
+  const callRoot = path.join(os.tmpdir(), "file-kanban-stdio-call-root");
   const calls = [];
   const registry = {
     ...registryWithProjects([]),
@@ -82,20 +80,38 @@ test("stdio init handler targets the configured process root", async () => {
     }
   };
 
-  registerStdioMcpSurface(server, { registry, initRoot });
+  registerStdioMcpSurface(server, { registry });
 
-  const result = await server.tool("init").handler({ title: "Initialized", intent: "Seed requirements" });
+  const result = await server.tool("init").handler({ title: "Initialized", intent: "Seed requirements", root: callRoot });
 
-  assert.deepEqual(calls, [{ title: "Initialized", intent: "Seed requirements", root: initRoot }]);
+  assert.deepEqual(calls, [{ title: "Initialized", intent: "Seed requirements", root: callRoot }]);
   assert.deepEqual(result.structuredContent, { projectId: "wt_init" });
+});
+
+test("stdio init handler rejects missing root as a structured tool error", async () => {
+  const server = new FakeMcpServer();
+
+  registerStdioMcpSurface(server, {
+    registry: registryWithProjects([])
+  });
+
+  const result = await server.tool("init").handler({ title: "Initialized" });
+
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent, {
+    error: {
+      code: "INVALID_ROOT",
+      message: "init requires a non-empty repository root.",
+      details: { field: "root" }
+    }
+  });
 });
 
 test("stdio tool errors preserve structured MCP error payloads", async () => {
   const server = new FakeMcpServer();
 
   registerStdioMcpSurface(server, {
-    registry: registryWithProjects([projectState("wt_one"), projectState("wt_two")]),
-    initRoot: os.tmpdir()
+    registry: registryWithProjects([projectState("wt_one"), projectState("wt_two")])
   });
 
   const result = await server.tool("query_ready").handler({});

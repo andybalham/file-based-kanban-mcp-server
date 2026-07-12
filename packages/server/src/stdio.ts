@@ -7,6 +7,7 @@ import {
   MCP_RESOURCE_TEMPLATES,
   MCP_TOOL_DEFINITIONS,
   MCP_TOOL_NAMES,
+  McpAdapterError,
   executeMcpMutationTool,
   executeMcpQueryTool,
   readMcpResource,
@@ -101,8 +102,6 @@ export interface McpToolResponse {
 export interface BuildStdioMcpServerOptions {
   /** Registry used by every resource and tool call. */
   registry: ProjectRegistry;
-  /** Root used by `init`, which intentionally creates or reuses a project before resolution. */
-  initRoot: string;
   /** Optional factory for converting design resource templates into SDK runtime objects. */
   resourceTemplateFactory?: (key: McpResourceKey, template: string) => unknown;
 }
@@ -116,7 +115,7 @@ export interface BuildStdioMcpServerOptions {
  */
 export function registerStdioMcpSurface(server: McpServerRuntime, options: BuildStdioMcpServerOptions): McpServerRuntime {
   registerResources(server, options.registry, options.resourceTemplateFactory);
-  registerTools(server, options.registry, options.initRoot);
+  registerTools(server, options.registry);
   return server;
 }
 
@@ -147,14 +146,13 @@ export async function createStdioMcpServer(options: BuildStdioMcpServerOptions):
  * same `FILE_KANBAN_WATCH_ROOTS` semantics.
  */
 export async function runStdioServer(options: Partial<BuildStdioMcpServerOptions> = {}): Promise<McpServerRuntime> {
-  const config = loadRuntimeConfig({ cwd: options.initRoot ?? process.cwd() });
-  const initRoot = options.initRoot ?? config.initRoot;
+  const config = loadRuntimeConfig();
   const registry =
     options.registry ??
     (await bootstrapProjectRegistry({
       watchRoots: config.watchRoots
     }));
-  const server = await createStdioMcpServer({ registry, initRoot });
+  const server = await createStdioMcpServer({ registry });
   const { StdioServerTransport } = await importSdkStdioModule();
   const transport = new StdioServerTransport();
 
@@ -184,7 +182,7 @@ function registerResources(
 /**
  * Register every §9.2 tool and route calls to the correct project-resolution/write path.
  */
-function registerTools(server: McpServerRuntime, registry: ProjectRegistry, initRoot: string): void {
+function registerTools(server: McpServerRuntime, registry: ProjectRegistry): void {
   for (const name of MCP_TOOL_NAMES) {
     const definition = MCP_TOOL_DEFINITIONS[name];
     server.registerTool(
@@ -197,7 +195,7 @@ function registerTools(server: McpServerRuntime, registry: ProjectRegistry, init
           idempotentHint: !definition.mutates || name === "init"
         }
       },
-      async (args) => toolResponse(await executeTool(registry, initRoot, name, args))
+      async (args) => toolResponse(await executeTool(registry, name, args))
     );
   }
 }
@@ -207,17 +205,17 @@ function registerTools(server: McpServerRuntime, registry: ProjectRegistry, init
  */
 async function executeTool(
   registry: ProjectRegistry,
-  initRoot: string,
   name: McpToolName,
   args: Record<string, unknown>
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: McpStructuredError }> {
   try {
     if (name === "init") {
+      const initArgs = args as unknown as McpToolArgsByName["init"];
       return {
         ok: true,
         result: await registry.init({
-          ...(args as unknown as McpToolArgsByName["init"]),
-          root: initRoot
+          ...initArgs,
+          root: requiredInitRoot(initArgs.root)
         })
       };
     }
@@ -244,6 +242,20 @@ async function executeTool(
   } catch (error) {
     return { ok: false, error: toMcpStructuredError(error) };
   }
+}
+
+/**
+ * Validate the per-call init root before the registry tries to resolve it as a filesystem path.
+ *
+ * The MCP SDK-level schema describes `root` as required, but this runtime guard keeps direct tests
+ * and loosely typed clients on the structured MCP error path instead of surfacing a TypeError.
+ */
+function requiredInitRoot(root: unknown): string {
+  if (typeof root !== "string" || root.trim().length === 0) {
+    throw new McpAdapterError("INVALID_ROOT", "init requires a non-empty repository root.", { field: "root" });
+  }
+
+  return root;
 }
 
 /**

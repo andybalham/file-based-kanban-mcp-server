@@ -226,7 +226,7 @@ keeps id allocation isolated; there is no global counter.
 watcher would deadlock against write-suppression, §12.4: the watcher is built to *ignore* paths
 the server just wrote.) Steps, in order:
 
-1. Resolve the target root (from the agent's working context / a passed path).
+1. Resolve the target root from the required `init.root` tool argument.
 2. **If a marker already exists** at the target: read it, return its existing `projectId`, make no
    further change. `init` is create-if-absent and idempotent — it never re-mints an id and never
    overwrites a seeded `source.md`.
@@ -662,11 +662,12 @@ Resources let the agent read current state cheaply without a tool round-trip.
 Each tool returns a structured result or a structured error (see §9.4). Validation runs against
 the full in-memory graph *before* any write (§12.1).
 
-Every tool except `init` takes an optional `projectId`, resolved per §9.0. `init` instead
-*returns* the `projectId`. `projectId?` is shown first on each signature for emphasis.
+Every tool except `init` takes an optional `projectId`, resolved per §9.0. `init` instead accepts
+a filesystem `root` and *returns* the `projectId`. `projectId?` is shown first on each signature
+for emphasis.
 
 ```
-init({ title, intent? })                                                           -> { projectId }
+init({ title, intent?, root })                                                     -> { projectId }
 create_entity({ projectId?, type, title, parent?, dependsOn?, estimate?, tags?, body? }) -> { id }
 update_entity({ projectId?, id, fields: { title?, body?, estimate?, tags? } })     -> { id }
 set_status({ projectId?, id, status })                                             -> { id, effectiveStatus }
@@ -683,10 +684,10 @@ list_projects()                                                                 
 
 Tool rules:
 
-- `init`: bootstraps a project in the current root (§5.1). Create-if-absent and idempotent — on
-  an already-marked root it returns the existing `projectId` unchanged and seeds nothing.
-  `title` is recorded in the marker; `intent` (if given) seeds `requirements/source.md` once.
-  This is the only tool that does not resolve an existing project.
+- `init`: bootstraps a project in the supplied `root` (§5.1). Create-if-absent and idempotent — on
+  an already-marked root it returns the existing `projectId` unchanged and seeds nothing. `title`
+  is recorded in the marker; `intent` (if given) seeds `requirements/source.md` once. This is the
+  only tool that does not resolve an existing project.
 - `list_projects`: the tool-surface equivalent of the `project://list` resource (§9.1); returns
   every registered project. An agent that does not yet hold a `projectId` calls this (or reads the
   resource) first.
@@ -750,6 +751,7 @@ Defined error codes:
 | `INVALID_STATUS`      | status not in the allowed set |
 | `AMBIGUOUS_PROJECT`   | more than one project is active and the call did not specify `projectId` |
 | `PROJECT_NOT_FOUND`   | a supplied `projectId` matches no reachable marker under the watch roots |
+| `INVALID_ROOT`        | `init.root` is missing, empty, or not a filesystem path string |
 | `NOT_A_PROJECT`       | a path expected to be a project root has no `.worktracker/project.json` marker |
 
 `DEP_TYPE_MISMATCH` replaces v1's `DEP_NOT_A_TASK`: the rule is no longer "must be a task" but

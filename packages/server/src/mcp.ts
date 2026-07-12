@@ -128,6 +128,7 @@ export const MCP_ERROR_CODES = [
   "INVALID_STATUS",
   "AMBIGUOUS_PROJECT",
   "PROJECT_NOT_FOUND",
+  "INVALID_ROOT",
   "NOT_A_PROJECT"
 ] as const;
 
@@ -201,6 +202,13 @@ export interface InitToolArgs {
   title: string;
   /** Optional requirements text seeded once when the project marker is first created. */
   intent?: string;
+  /**
+   * Repository root to initialize for this call.
+   *
+   * Keeping root on the tool call lets one MCP process bootstrap multiple repositories without a
+   * process-level init-root setting.
+   */
+  root: string;
 }
 
 /** Result returned by `init`. */
@@ -486,8 +494,8 @@ export interface McpToolDefinition<Name extends McpToolName = McpToolName> {
 export const MCP_TOOL_DEFINITIONS: { [Name in McpToolName]: McpToolDefinition<Name> } = {
   init: {
     name: "init",
-    description: "Create or reuse the current root's work-tracker project marker.",
-    inputFields: ["title", "intent"],
+    description: "Create or reuse a repository root's work-tracker project marker.",
+    inputFields: ["title", "intent", "root"],
     resultFields: ["projectId"],
     mutates: true
   },

@@ -48,30 +48,26 @@ test("loadRuntimeConfig defaults to the process root, default port, and disabled
   const cwd = path.join(os.tmpdir(), "file-kanban-config-default");
 
   assert.deepEqual(loadRuntimeConfig({ env: {}, cwd }), {
-    initRoot: path.resolve(cwd),
     watchRoots: [path.resolve(cwd)],
     port: DEFAULT_HTTP_PORT,
     git: false
   });
 });
 
-test("loadRuntimeConfig parses configured watch roots, port, init root, and git flag", () => {
+test("loadRuntimeConfig parses configured watch roots, port, and git flag", () => {
   const firstRoot = path.join(os.tmpdir(), "file-kanban-config-first");
   const secondRoot = path.join(os.tmpdir(), "file-kanban-config-second");
-  const initRoot = path.join(os.tmpdir(), "file-kanban-config-init");
 
   assert.deepEqual(
     loadRuntimeConfig({
       env: {
         [RUNTIME_CONFIG_ENV.watchRoots]: [firstRoot, secondRoot, firstRoot].join(path.delimiter),
         [RUNTIME_CONFIG_ENV.port]: "4317",
-        [RUNTIME_CONFIG_ENV.initRoot]: initRoot,
         [RUNTIME_CONFIG_ENV.git]: "yes"
       },
       cwd: path.join(os.tmpdir(), "ignored-cwd")
     }),
     {
-      initRoot: path.resolve(initRoot),
       watchRoots: [path.resolve(firstRoot), path.resolve(secondRoot)],
       port: 4317,
       git: true
@@ -103,7 +99,6 @@ test("runHttpViewerServer listens on configured port and starts watchers for con
   const registry = createProjectRegistry({ watchRoots: [] });
   const runtime = await runHttpViewerServer({
     config: {
-      initRoot: watchRoot,
       watchRoots: [watchRoot],
       port: 0,
       git: false
