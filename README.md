@@ -61,7 +61,16 @@ $env:FILE_KANBAN_WATCH_ROOTS = "C:\src"
 When an MCP client launches the server for you, configure the command as the built workspace bin
 and pass the same environment values through that client's MCP server configuration. The stdio
 process discovers already-initialized projects from `FILE_KANBAN_WATCH_ROOTS`; the `init` MCP tool
-initializes the repository root supplied in the tool call.
+initializes the repository root supplied in the tool call. Both `title` and `root` are required;
+`intent` is optional requirements text:
+
+```json
+{
+  "title": "Payments Refactor",
+  "root": "C:\\src\\payments-refactor",
+  "intent": "Replace the legacy payment workflow."
+}
+```
 
 Most agent coding clients use one of these MCP stdio configuration shapes.
 
@@ -100,6 +109,10 @@ Node instead:
 }
 ```
 
+The client launches compiled code from `packages/server/dist`. After pulling or making server
+changes, rebuild with `npm run build -w @file-kanban/server`, then restart or reconnect the MCP
+server so the client loads the new tool schemas and handlers.
+
 ### Agent Skill
 
 This repository includes an agent-facing skill at
@@ -128,8 +141,8 @@ discovery, the project watcher, and the HTTP/WebSocket viewer.
 | `FILE_KANBAN_GIT` | `false` | Reserved git side-effect flag. The current implementation parses it but does not commit changes. |
 
 `runStdioServer()` uses the resolved `watchRoots` for startup discovery. The MCP `init` tool
-requires a `root` argument so one stdio process can initialize any repository selected by the
-client. `runHttpViewerServer()` uses the same resolved `watchRoots` for boot discovery and live
+requires `title` and `root` arguments so one stdio process can initialize any repository selected
+by the client. `runHttpViewerServer()` uses the same resolved `watchRoots` for boot discovery and live
 marker/content watching, and listens on the resolved `port`.
 
 Example Windows configuration:

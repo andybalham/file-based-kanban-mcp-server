@@ -60,8 +60,9 @@ Invalid ports, empty watch-root lists, and unrecognized git flags fail startup w
 configuration errors.
 
 `loadRuntimeConfig()` resolves this environment once per process startup. The stdio startup path
-uses `watchRoots` to discover already-marked projects. The `init` tool requires a `root` argument,
-letting one stdio process initialize any repository selected by the client. The HTTP/WebSocket
+uses `watchRoots` to discover already-marked projects. The `init` tool requires `title` and `root`
+arguments, with optional `intent` requirements text, letting one stdio process initialize any
+repository selected by the client. The HTTP/WebSocket
 viewer startup path uses `watchRoots` for both boot discovery and live marker/content watching,
 then listens on `port`.
 
@@ -72,6 +73,10 @@ Build the server package before launching the stdio binary:
 ```powershell
 npm run build -w @file-kanban/server
 ```
+
+Clients that launch `packages/server/dist/stdio.js` continue running the previously compiled
+adapter until they reconnect. After changing or updating the server, run the build command above
+and restart or reconnect the configured MCP server.
 
 For a direct local smoke run on Windows, start the workspace bin after setting the runtime
 environment:
@@ -198,6 +203,16 @@ Bootstrap a repository:
 Use the file-kanban MCP server to initialize this repository as a project named "Checkout
 Modernization". Pass this repository's absolute path as the init root, seed the requirements from
 docs/requirements.md if that file exists, then tell me the projectId.
+```
+
+The corresponding `init` arguments are:
+
+```json
+{
+  "title": "Checkout Modernization",
+  "root": "C:\\Users\\me\\source\\checkout-modernization",
+  "intent": "Optional requirements text"
+}
 ```
 
 Bootstrap a specific repository from one shared MCP configuration:

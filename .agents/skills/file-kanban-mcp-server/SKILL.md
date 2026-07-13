@@ -13,7 +13,8 @@ truth and its indexes and graphs as generated output; do not edit them to perfor
 - Call `list_projects` when the project is unknown or ambiguous.
 - Keep the returned portable `projectId` in working context.
 - Pass `projectId` explicitly when more than one project is registered.
-- Call `init` with the repository `root` only when `.worktracker/project.json` is absent. Retain the
+- Call `init` with the required project `title` and repository `root` only when
+  `.worktracker/project.json` is absent. Pass optional requirements text as `intent`, and retain the
   returned `projectId` for later calls.
 
 ## Select The Interface

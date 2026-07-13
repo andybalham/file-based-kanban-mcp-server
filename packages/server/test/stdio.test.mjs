@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import os from "node:os";
 import path from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import {
   MCP_RESOURCE_DEFINITIONS,
@@ -10,7 +12,7 @@ import {
   MCP_TOOL_NAMES,
   RegistryError
 } from "../dist/main.js";
-import { parseResourceReadArgs, registerStdioMcpSurface } from "../dist/stdio.js";
+import { createStdioMcpServer, parseResourceReadArgs, registerStdioMcpSurface } from "../dist/stdio.js";
 
 test("stdio surface registers every design resource and tool deterministically", () => {
   const server = new FakeMcpServer();
@@ -39,6 +41,51 @@ test("stdio surface registers every design resource and tool deterministically",
   assert.equal(server.tools.find((tool) => tool.name === "list_projects").options.annotations.readOnlyHint, true);
   assert.equal(server.tools.find((tool) => tool.name === "create_entity").options.annotations.readOnlyHint, false);
   assert.equal(server.tools.find((tool) => tool.name === "init").options.description, MCP_TOOL_DEFINITIONS.init.description);
+  assert.equal(server.tools.every((tool) => tool.options.inputSchema !== undefined), true);
+});
+
+test("real MCP SDK preserves and validates init arguments", async (t) => {
+  const calls = [];
+  const registry = {
+    ...registryWithProjects([]),
+    async init(args) {
+      calls.push(args);
+      return { projectId: "wt_sdk_init" };
+    }
+  };
+  const server = await createStdioMcpServer({ registry });
+  const client = new Client({ name: "stdio-regression-test", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  t.after(async () => {
+    await client.close();
+    await server.close?.();
+  });
+
+  await Promise.all([server.connect?.(serverTransport), client.connect(clientTransport)]);
+
+  const tools = await client.listTools();
+  for (const definition of Object.values(MCP_TOOL_DEFINITIONS)) {
+    const registeredTool = tools.tools.find((tool) => tool.name === definition.name);
+    assert.ok(registeredTool, `Expected SDK tool registration for ${definition.name}.`);
+    assert.deepEqual(Object.keys(registeredTool.inputSchema.properties ?? {}), [...definition.inputFields]);
+  }
+
+  const initTool = tools.tools.find((tool) => tool.name === "init");
+  assert.deepEqual(initTool.inputSchema.required, ["title", "root"]);
+
+  const root = path.join(os.tmpdir(), "file-kanban-real-sdk-init");
+  const result = await client.callTool({
+    name: "init",
+    arguments: { title: "SDK Project", intent: "Seed requirements", root }
+  });
+
+  assert.deepEqual(calls, [{ title: "SDK Project", intent: "Seed requirements", root }]);
+  assert.deepEqual(result.structuredContent, { projectId: "wt_sdk_init" });
+  const invalidResult = await client.callTool({ name: "init", arguments: { root } });
+  assert.equal(invalidResult.isError, true);
+  assert.match(invalidResult.content[0].text, /Invalid arguments for tool init.*title/s);
+  assert.equal(calls.length, 1);
 });
 
 test("stdio registered handlers return MCP resource and tool response envelopes", async () => {

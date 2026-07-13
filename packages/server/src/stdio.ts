@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 import {
   MCP_RESOURCE_DEFINITIONS,
@@ -63,7 +64,7 @@ export interface McpServerRuntime {
   /** Register one callable MCP tool. */
   registerTool(
     name: string,
-    options: { description: string; annotations?: Record<string, boolean> },
+    options: { description: string; inputSchema: z.ZodType; annotations?: Record<string, boolean> },
     handler: (args: Record<string, unknown>) => Promise<McpToolResponse>
   ): void;
 
@@ -105,6 +106,85 @@ export interface BuildStdioMcpServerOptions {
   /** Optional factory for converting design resource templates into SDK runtime objects. */
   resourceTemplateFactory?: (key: McpResourceKey, template: string) => unknown;
 }
+
+/** Reusable optional selector shared by every project-scoped MCP tool. */
+const PROJECT_SELECTOR_SCHEMA = {
+  projectId: z.string().optional()
+};
+
+/** Entity layers accepted by creation and critical-path operations. */
+const ENTITY_TYPE_SCHEMA = z.enum(["epic", "story", "task"]);
+
+/** Stored task statuses accepted by the only status mutation tool. */
+const STORED_STATUS_SCHEMA = z.enum(["todo", "in-progress", "done"]);
+
+/**
+ * Runtime input schemas for the complete public MCP tool surface.
+ *
+ * The high-level MCP SDK treats a tool registered without `inputSchema` as a zero-argument tool and
+ * calls its handler with request metadata instead of `params.arguments`. Keeping a schema for every
+ * tool, including the intentionally empty `list_projects` object, preserves arguments across the
+ * real transport boundary and makes the advertised JSON schemas match the TypeScript contracts.
+ */
+const MCP_TOOL_INPUT_SCHEMAS: { [Name in McpToolName]: z.ZodType<McpToolArgsByName[Name]> } = {
+  init: z.object({
+    title: z.string(),
+    intent: z.string().optional(),
+    root: z.string()
+  }),
+  create_entity: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    type: ENTITY_TYPE_SCHEMA,
+    title: z.string(),
+    parent: z.string().nullable().optional(),
+    dependsOn: z.array(z.string()).optional(),
+    estimate: z.number().optional(),
+    tags: z.array(z.string()).optional(),
+    body: z.string().optional()
+  }),
+  update_entity: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    id: z.string(),
+    fields: z.object({
+      title: z.string().optional(),
+      body: z.string().optional(),
+      estimate: z.number().optional(),
+      tags: z.array(z.string()).optional()
+    })
+  }),
+  set_status: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    id: z.string(),
+    status: STORED_STATUS_SCHEMA
+  }),
+  link_dependency: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    from: z.string(),
+    to: z.string()
+  }),
+  unlink_dependency: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    from: z.string(),
+    to: z.string()
+  }),
+  move_entity: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    id: z.string(),
+    newParent: z.string().nullable()
+  }),
+  archive_entity: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    id: z.string()
+  }),
+  query_ready: z.object(PROJECT_SELECTOR_SCHEMA),
+  query_blocked: z.object(PROJECT_SELECTOR_SCHEMA),
+  critical_path: z.object({
+    ...PROJECT_SELECTOR_SCHEMA,
+    type: ENTITY_TYPE_SCHEMA.optional()
+  }),
+  validate: z.object(PROJECT_SELECTOR_SCHEMA),
+  list_projects: z.object({})
+};
 
 /**
  * Register the full design MCP surface on an SDK-compatible server instance.
@@ -189,6 +269,7 @@ function registerTools(server: McpServerRuntime, registry: ProjectRegistry): voi
       name,
       {
         description: definition.description,
+        inputSchema: MCP_TOOL_INPUT_SCHEMAS[name],
         annotations: {
           readOnlyHint: !definition.mutates,
           destructiveHint: false,
