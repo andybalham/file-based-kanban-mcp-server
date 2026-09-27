@@ -161,7 +161,7 @@ The viewer command builds the server and React UI, discovers projects from `FILE
 then serves the read-only HTTP/WebSocket API and built UI on `FILE_KANBAN_PORT`:
 
 ```powershell
-$env:FILE_KANBAN_WATCH_ROOTS = "C:\src"
+
 $env:FILE_KANBAN_PORT = "4000"
 npm run viewer
 ```
