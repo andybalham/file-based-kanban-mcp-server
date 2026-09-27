@@ -1,11 +1,17 @@
 import path from "node:path";
 
 import { readMarker } from "@file-kanban/core";
-import type { ProjectId } from "@file-kanban/core";
+import type { ProjectId, ProjectMarker, ProjectState } from "@file-kanban/core";
 import chokidar from "chokidar";
 
 import type { HttpWebSocketBroadcaster } from "./http.js";
-import type { ProjectRegistry, RegisteredProject } from "./registry.js";
+import { logInvalidMarkerToStderr, logProjectLoadErrorToStderr } from "./registry.js";
+import type {
+  InvalidMarkerReporter,
+  ProjectLoadErrorReporter,
+  ProjectRegistry,
+  RegisteredProject
+} from "./registry.js";
 
 /** Relative marker path that identifies one work-tracker project root. */
 const PROJECT_MARKER_RELATIVE_PATH = path.join(".worktracker", "project.json");
@@ -71,6 +77,20 @@ export interface CreateProjectWatcherOptions {
   writeSuppressionDebounceMs?: number;
   /** Optional watcher factory for tests; production defaults to chokidar. */
   watcherFactory?: ProjectFileWatcherFactory;
+  /**
+   * Optional reporter for a malformed marker that appears or changes while the server runs.
+   *
+   * Defaults to stderr logging. Without this, a bad marker event would reject the fire-and-forget
+   * handler and crash the process through an unhandled promise rejection.
+   */
+  onInvalidMarker?: InvalidMarkerReporter;
+  /**
+   * Optional reporter for a project whose content cannot be rebuilt after a watcher event.
+   *
+   * Defaults to stderr logging. The last good state stays registered, so one broken hand edit
+   * neither crashes the process nor blanks the project for MCP and viewer clients.
+   */
+  onProjectLoadError?: ProjectLoadErrorReporter;
 }
 
 /** Running watcher controller returned to server startup code. */
@@ -125,6 +145,12 @@ class ProjectWatcher implements ProjectWatcherController {
   /** Delay used before deleting a consumed suppressed path from the shared set. */
   private readonly writeSuppressionDebounceMs: number;
 
+  /** Reporter for malformed markers seen by the coarse marker watcher. */
+  private readonly onInvalidMarker: InvalidMarkerReporter;
+
+  /** Reporter for projects whose content failed to rebuild after a watcher event. */
+  private readonly onProjectLoadError: ProjectLoadErrorReporter;
+
   /** Pending cleanup timers keyed by normalized suppressed path. */
   private readonly suppressionCleanupTimers = new Map<string, NodeJS.Timeout>();
 
@@ -144,6 +170,8 @@ class ProjectWatcher implements ProjectWatcherController {
     this.writeSuppressionSet = options.writeSuppressionSet ?? new Set<string>();
     this.writeSuppressionDebounceMs = options.writeSuppressionDebounceMs ?? 50;
     this.watcherFactory = options.watcherFactory ?? createChokidarProjectFileWatcher;
+    this.onInvalidMarker = options.onInvalidMarker ?? logInvalidMarkerToStderr;
+    this.onProjectLoadError = options.onProjectLoadError ?? logProjectLoadErrorToStderr;
   }
 
   /**
@@ -200,14 +228,67 @@ class ProjectWatcher implements ProjectWatcherController {
     }
 
     const projectRoot = projectRootFromMarkerPath(filePath);
-    const marker = await readMarker(projectRoot);
+    const marker = await this.readMarkerOrReport(projectRoot);
     if (marker === null) {
       return;
     }
 
-    const state = await this.registry.registerDiscovered(projectRoot, marker);
+    const state = await this.registerOrReport(projectRoot, marker);
+    if (state === null) {
+      return;
+    }
+
     this.ensureContentWatcher({ projectId: state.projectId, title: state.marker.title, root: state.root });
     this.broadcaster.broadcastReload(state.projectId);
+  }
+
+  /**
+   * Read a project's marker for a watcher event, reporting instead of throwing on failure.
+   *
+   * Watcher handlers run fire-and-forget, so any rejection would become an unhandled promise
+   * rejection and terminate the process. A malformed marker (often a half-written hand edit) and
+   * transient read failures (e.g. a Windows file lock during another tool's save) are reported
+   * and ignored; any previously registered state for this root stays in place until a later
+   * event delivers a readable marker.
+   */
+  private async readMarkerOrReport(projectRoot: string): Promise<ProjectMarker | null> {
+    try {
+      return await readMarker(projectRoot);
+    } catch (error) {
+      this.onInvalidMarker({
+        root: projectRoot,
+        markerPath: path.join(projectRoot, PROJECT_MARKER_RELATIVE_PATH),
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Rebuild and register one project's state, reporting instead of throwing on failure.
+   *
+   * The registry only replaces a root's cached state after a successful build, so a failed
+   * rebuild (typically a hand edit that left entity frontmatter unparseable) keeps the last good
+   * state serving MCP and viewer reads. No reload is broadcast, because nothing changed from the
+   * clients' point of view; the next valid edit refreshes normally.
+   */
+  private async registerOrReport(root: string, marker: ProjectMarker): Promise<ProjectState | null> {
+    try {
+      return await this.registry.registerDiscovered(root, marker);
+    } catch (error) {
+      const resolvedRoot = path.resolve(root);
+      const alreadyRegistered = this.registry
+        .listProjects()
+        .some((project) => path.resolve(project.root) === resolvedRoot);
+
+      this.onProjectLoadError({
+        root: resolvedRoot,
+        projectId: marker.projectId,
+        message: error instanceof Error ? error.message : String(error),
+        outcome: alreadyRegistered ? "kept-previous" : "skipped"
+      });
+      return null;
+    }
   }
 
   /**
@@ -268,12 +349,16 @@ class ProjectWatcher implements ProjectWatcherController {
    * Rescan one known project after a content edit and notify only that project's subscribers.
    */
   private async refreshProject(root: string, expectedProjectId: ProjectId): Promise<void> {
-    const marker = await readMarker(root);
+    const marker = await this.readMarkerOrReport(root);
     if (marker === null) {
       return;
     }
 
-    const state = await this.registry.registerDiscovered(root, marker);
+    const state = await this.registerOrReport(root, marker);
+    if (state === null) {
+      return;
+    }
+
     this.broadcaster.broadcastReload(state.projectId ?? expectedProjectId);
   }
 }

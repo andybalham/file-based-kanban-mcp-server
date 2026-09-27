@@ -148,6 +148,39 @@ test("project watcher discovers externally added markers and broadcasts only tha
   assert.equal(fake.watchers.every((fakeWatcher) => fakeWatcher.closed), true);
 });
 
+test("project watcher reports a malformed marker event without registering or broadcasting", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-watcher-malformed-");
+  const projectRoot = path.join(watchRoot, "repo");
+  const markerPath = path.join(projectRoot, ".worktracker", "project.json");
+  const fake = createFakeWatcherFactory();
+  const broadcaster = createBroadcaster();
+  const registry = createProjectRegistry({ watchRoots: [watchRoot] });
+  const reported = [];
+  const watcher = createProjectWatcher({
+    registry,
+    watchRoots: [watchRoot],
+    broadcaster,
+    watcherFactory: fake.factory,
+    onInvalidMarker: (issue) => reported.push(issue)
+  });
+
+  await watcher.start();
+
+  await fs.mkdir(path.dirname(markerPath), { recursive: true });
+  await fs.writeFile(markerPath, "{ half-written", "utf8");
+  fake.watchers[0].emit("add", markerPath);
+
+  await waitForCondition(() => reported.length === 1);
+
+  assert.equal(reported[0].root, projectRoot);
+  assert.match(reported[0].message, /Marker is not valid JSON/);
+  assert.deepEqual(registry.listProjects(), []);
+  assert.deepEqual(broadcaster.reloads, []);
+  assert.equal(fake.watchers.length, 1);
+
+  await watcher.close();
+});
+
 test("project watcher refreshes known project content and does not broadcast to other projects", async () => {
   const watchRoot = await makeTempRoot("file-kanban-watcher-content-");
   const firstRoot = path.join(watchRoot, "first");
@@ -186,6 +219,55 @@ test("project watcher refreshes known project content and does not broadcast to 
   assert.deepEqual(broadcaster.reloads, ["wt_first"]);
   assert.equal(registry.resolveProject("wt_first").index.byId.get("T-001").title, "Edited Task");
   assert.equal(registry.resolveProject("wt_second").index.byId.size, 0);
+
+  await watcher.close();
+});
+
+test("project watcher keeps the last good project state when an entity edit is unparseable", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-watcher-bad-edit-");
+  const projectRoot = path.join(watchRoot, "repo");
+  const fake = createFakeWatcherFactory();
+  const broadcaster = createBroadcaster();
+
+  await writeMarkedProject(projectRoot, "wt_edited", "Edited Project");
+  await writeEntity(projectRoot, "E-001", "Initial Epic");
+  await writeEntity(projectRoot, "S-001", "Initial Story");
+  await writeEntity(projectRoot, "T-001", "Initial Task");
+
+  const registry = createProjectRegistry({ watchRoots: [watchRoot] });
+  await registry.discover();
+
+  const reported = [];
+  const watcher = createProjectWatcher({
+    registry,
+    watchRoots: [watchRoot],
+    broadcaster,
+    watcherFactory: fake.factory,
+    onProjectLoadError: (issue) => reported.push(issue)
+  });
+  await watcher.start();
+
+  const contentWatcher = fake.watchers.find((candidate) =>
+    candidate.paths.some((watchPath) => path.resolve(watchPath).startsWith(path.resolve(projectRoot)))
+  );
+  const brokenPath = path.join(projectRoot, ".worktracker", "entities", "T-002-half-saved.md");
+  await fs.writeFile(brokenPath, "---\nid: [unclosed\n---\n", "utf8");
+  contentWatcher.emit("add", brokenPath);
+
+  await waitForCondition(() => reported.length === 1);
+
+  assert.equal(reported[0].projectId, "wt_edited");
+  assert.equal(reported[0].outcome, "kept-previous");
+  assert.deepEqual(broadcaster.reloads, []);
+  assert.equal(registry.resolveProject("wt_edited").index.byId.get("T-001").title, "Initial Task");
+
+  // Fixing the file lets the next event refresh normally.
+  await fs.rm(brokenPath);
+  await writeEntity(projectRoot, "T-001", "Recovered Task");
+  contentWatcher.emit("change", path.join(projectRoot, ".worktracker", "entities", "T-001.md"));
+
+  await waitForCondition(() => broadcaster.reloads.length === 1);
+  assert.equal(registry.resolveProject("wt_edited").index.byId.get("T-001").title, "Recovered Task");
 
   await watcher.close();
 });

@@ -43,5 +43,11 @@ tmp/
 temp/
 *.tmp
 
+# Test fixtures contain real .worktracker project markers. Git keeps tracking the committed files
+# (ignore rules never untrack them), but marker discovery honors .gitignore directory rules, so this
+# stops fixtures being registered as live projects when a watch root contains this repository.
+# New fixture files must be added with `git add -f`.
+packages/core/test/fixtures/
+
 # Do not ignore future .worktracker generated artifacts.
 # The design requires .worktracker/index/* and .worktracker/graphs/* to be committed.

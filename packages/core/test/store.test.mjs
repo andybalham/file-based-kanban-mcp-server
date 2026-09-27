@@ -9,6 +9,7 @@ import {
   allocateId,
   createStore,
   discoverProjects,
+  isProjectMarkerParseError,
   move,
   parse,
   readMarker,
@@ -650,6 +651,73 @@ test("discoverProjects finds markers under watch roots in deterministic root ord
       [zetaRoot, "wt_zeta"]
     ]
   );
+});
+
+test("discoverProjects skips malformed markers, reports each one, and still returns valid projects", async () => {
+  const watchRoot = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-discover-malformed-"));
+  const validRoot = path.join(watchRoot, "valid-repo");
+  const staleSchemaRoot = path.join(watchRoot, "stale-schema-repo");
+  const brokenJsonRoot = path.join(watchRoot, "broken-json-repo");
+  const nestedUnderMalformedRoot = path.join(staleSchemaRoot, "fixtures", "nested-repo");
+
+  await writeMarker(validRoot, {
+    projectId: "wt_valid",
+    title: "Valid Project",
+    created: "2026-06-06T19:45:00Z"
+  });
+  // Stale marker schema that used `id` instead of `projectId`.
+  await fs.mkdir(path.join(staleSchemaRoot, ".worktracker"), { recursive: true });
+  await fs.writeFile(
+    path.join(staleSchemaRoot, ".worktracker", "project.json"),
+    '{ "id": "stale", "title": "Stale", "created": "2026-06-06T00:00:00Z" }\n',
+    "utf8"
+  );
+  await fs.mkdir(path.join(brokenJsonRoot, ".worktracker"), { recursive: true });
+  await fs.writeFile(path.join(brokenJsonRoot, ".worktracker", "project.json"), "{ not json", "utf8");
+  // A malformed marker still claims its root, so markers below it stay undiscovered.
+  await writeMarker(nestedUnderMalformedRoot, {
+    projectId: "wt_nested",
+    title: "Nested Project",
+    created: "2026-06-06T19:46:00Z"
+  });
+
+  const reported = [];
+  const discovered = await discoverProjects([watchRoot], {
+    onInvalidMarker: (issue) => reported.push(issue)
+  });
+
+  assert.deepEqual(
+    discovered.map((project) => project.marker.projectId),
+    ["wt_valid"]
+  );
+  assert.deepEqual(
+    reported.map((issue) => [issue.root, issue.markerPath]),
+    [
+      [brokenJsonRoot, path.join(brokenJsonRoot, ".worktracker", "project.json")],
+      [staleSchemaRoot, path.join(staleSchemaRoot, ".worktracker", "project.json")]
+    ]
+  );
+  assert.match(reported[0].message, /Marker is not valid JSON/);
+  assert.match(reported[1].message, /Marker field 'projectId' must be a non-empty string/);
+
+  // Without a reporter, discovery still skips malformed markers instead of throwing.
+  const silentlyDiscovered = await discoverProjects([watchRoot]);
+  assert.deepEqual(
+    silentlyDiscovered.map((project) => project.marker.projectId),
+    ["wt_valid"]
+  );
+});
+
+test("readMarker reports invalid marker JSON as a marker parse error naming the file", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "file-kanban-marker-json-"));
+  await fs.mkdir(path.join(root, ".worktracker"), { recursive: true });
+  await fs.writeFile(path.join(root, ".worktracker", "project.json"), "[]", "utf8");
+
+  await assert.rejects(readMarker(root), (error) => {
+    assert.equal(isProjectMarkerParseError(error), true);
+    assert.match(error.message, /project\.json: Marker must be a JSON object\./);
+    return true;
+  });
 });
 
 test("discoverProjects ignores standard noisy directories and does not descend past a marker", async () => {

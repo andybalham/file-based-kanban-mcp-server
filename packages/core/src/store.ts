@@ -102,6 +102,8 @@ interface DiscoveryContext {
   watchRoot: string;
   /** Active ignore rules inherited from ancestor `.gitignore` files. */
   ignoreRules: DiscoveryIgnoreRule[];
+  /** Reporter for malformed markers skipped during this walk. */
+  onInvalidMarker?: (issue: InvalidProjectMarker) => void;
 }
 
 /**
@@ -112,6 +114,33 @@ export interface DiscoveredProject {
   root: string;
   /** Parsed marker content used by the server registry to rebuild project state. */
   marker: ProjectMarker;
+}
+
+/**
+ * One `.worktracker/project.json` marker that discovery found but could not parse.
+ *
+ * A single malformed marker (stale schema, truncated JSON, hand-edit mistake) anywhere below a
+ * watch root must not abort discovery for every other project, so discovery reports it through
+ * this shape and skips that root instead of throwing.
+ */
+export interface InvalidProjectMarker {
+  /** Directory that owns the malformed marker; it is not registered as a project. */
+  root: string;
+  /** Absolute path of the malformed `.worktracker/project.json` file. */
+  markerPath: string;
+  /** Parse failure message, already prefixed with the marker path. */
+  message: string;
+}
+
+/**
+ * Optional hooks for `discoverProjects`.
+ *
+ * Core stays free of logging policy; the server decides how skipped markers are surfaced (stderr
+ * for stdio, where stdout is the MCP protocol channel).
+ */
+export interface DiscoverProjectsOptions {
+  /** Called once per malformed marker that discovery skipped. */
+  onInvalidMarker?: (issue: InvalidProjectMarker) => void;
 }
 
 /**
@@ -335,7 +364,16 @@ export async function scan(root: string): Promise<Index> {
  */
 export async function parse(filePath: string): Promise<Entity> {
   const raw = await fs.readFile(filePath, "utf8");
-  const parsed = matter(raw);
+
+  // Surface YAML syntax errors as entity parse errors so every malformed-entity case carries the
+  // file path and is recognizable to callers through one error name.
+  let parsed: matter.GrayMatterFile<string>;
+  try {
+    parsed = matter(raw);
+  } catch (error) {
+    throw entityParseError(filePath, `Frontmatter is not valid YAML: ${(error as Error).message}`);
+  }
+
   const data = parsed.data as Record<string, unknown>;
 
   const id = readRequiredString(filePath, data, "id");
@@ -489,7 +527,19 @@ export async function readMarker(root: string): Promise<ProjectMarker | null> {
     throw error;
   }
 
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  // Report unparseable JSON as a marker parse error so callers can recognize every malformed-marker
+  // case with one check and the message names the offending file.
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch (error) {
+    throw markerParseError(markerPath, `Marker is not valid JSON: ${(error as Error).message}`);
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw markerParseError(markerPath, "Marker must be a JSON object.");
+  }
+
   return {
     projectId: readMarkerString(markerPath, parsed, "projectId"),
     title: readMarkerString(markerPath, parsed, "title"),
@@ -793,13 +843,23 @@ function formatEntityId(type: EntityType, value: number): EntityId {
  * Discovery treats `.worktracker/project.json` as the only source of project identity. Once a
  * marker is found, traversal stops below that project root so a nested fixture or vendored marker
  * cannot create a second active project from inside an already discovered project.
+ *
+ * Malformed markers are skipped and reported through `options.onInvalidMarker` rather than thrown,
+ * so one bad `project.json` below a watch root cannot prevent every other project from loading.
  */
-export async function discoverProjects(watchRoots: string[]): Promise<DiscoveredProject[]> {
+export async function discoverProjects(
+  watchRoots: string[],
+  options: DiscoverProjectsOptions = {}
+): Promise<DiscoveredProject[]> {
   const discovered = new Map<string, DiscoveredProject>();
 
   for (const watchRoot of watchRoots) {
     const resolvedRoot = path.resolve(watchRoot);
-    await discoverProjectsUnder(resolvedRoot, discovered, { watchRoot: resolvedRoot, ignoreRules: [] });
+    await discoverProjectsUnder(resolvedRoot, discovered, {
+      watchRoot: resolvedRoot,
+      ignoreRules: [],
+      onInvalidMarker: options.onInvalidMarker
+    });
   }
 
   return [...discovered.values()].sort((a, b) => a.root.localeCompare(b.root));
@@ -817,7 +877,24 @@ async function discoverProjectsUnder(
     return;
   }
 
-  const marker = await readMarker(root);
+  let marker: ProjectMarker | null;
+  try {
+    marker = await readMarker(root);
+  } catch (error) {
+    if (!isProjectMarkerParseError(error)) {
+      throw error;
+    }
+
+    // A malformed marker still claims this directory as a project root, so do not descend into it
+    // (matching the valid-marker rule); just report it and leave the rest of the walk untouched.
+    context.onInvalidMarker?.({
+      root,
+      markerPath: path.join(root, PROJECT_MARKER_PATH),
+      message: error.message
+    });
+    return;
+  }
+
   if (marker !== null) {
     discovered.set(root, { root, marker });
     return;
@@ -851,7 +928,11 @@ async function discoverProjectsUnder(
     .sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
 
   for (const childDirectory of childDirectories) {
-    await discoverProjectsUnder(childDirectory, discovered, { watchRoot: context.watchRoot, ignoreRules });
+    await discoverProjectsUnder(childDirectory, discovered, {
+      watchRoot: context.watchRoot,
+      ignoreRules,
+      onInvalidMarker: context.onInvalidMarker
+    });
   }
 }
 
@@ -1296,8 +1377,34 @@ function readMarkerString(filePath: string, data: Record<string, unknown>, key: 
  */
 function markerParseError(filePath: string, message: string): Error {
   const error = new Error(`${filePath}: ${message}`);
-  error.name = "ProjectMarkerParseError";
+  error.name = PROJECT_MARKER_PARSE_ERROR_NAME;
   return error;
+}
+
+/** Error name shared by every malformed-marker failure raised from `readMarker`. */
+const PROJECT_MARKER_PARSE_ERROR_NAME = "ProjectMarkerParseError";
+
+/**
+ * Return true when `readMarker` rejected a marker because its content is malformed.
+ *
+ * Filesystem failures (permissions, I/O) are deliberately not matched so they still surface as
+ * real errors; only content problems are safe for discovery and watchers to skip.
+ */
+export function isProjectMarkerParseError(error: unknown): error is Error {
+  return error instanceof Error && error.name === PROJECT_MARKER_PARSE_ERROR_NAME;
+}
+
+/**
+ * Return true when loading a project failed because of its entity content rather than the
+ * filesystem.
+ *
+ * `scan`/`parse` raise `EntityParseError` for bad frontmatter or duplicate ids. (Status resolution
+ * already tolerates dependency cycles, so it never adds a content error of its own.) Servers use
+ * this to skip one broken project at boot, or keep its last good state on a live edit, instead of
+ * letting a single malformed entity file take down every other project.
+ */
+export function isProjectContentError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "EntityParseError";
 }
 
 /**

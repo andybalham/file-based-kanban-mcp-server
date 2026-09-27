@@ -22,6 +22,8 @@ export {
   allocateId,
   createStore,
   discoverProjects,
+  isProjectContentError,
+  isProjectMarkerParseError,
   move,
   parse,
   readMarker,
@@ -32,7 +34,13 @@ export {
   writeGeneratedArtifacts,
   writeMarker
 } from "./store.js";
-export type { DiscoveredProject, GeneratedArtifact, Store } from "./store.js";
+export type {
+  DiscoveredProject,
+  DiscoverProjectsOptions,
+  GeneratedArtifact,
+  InvalidProjectMarker,
+  Store
+} from "./store.js";
 export {
   blocked,
   buildDepGraph,

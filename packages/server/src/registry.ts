@@ -2,8 +2,16 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { discoverProjects, readMarker, resolveAll, scan, seedRequirements, writeMarker } from "@file-kanban/core";
-import type { ProjectId, ProjectMarker, ProjectState } from "@file-kanban/core";
+import {
+  discoverProjects,
+  isProjectContentError,
+  readMarker,
+  resolveAll,
+  scan,
+  seedRequirements,
+  writeMarker
+} from "@file-kanban/core";
+import type { InvalidProjectMarker, ProjectId, ProjectMarker, ProjectState } from "@file-kanban/core";
 
 /**
  * Root-relative directory containing entity Markdown files.
@@ -88,6 +96,60 @@ export interface CreateProjectRegistryOptions extends ProjectRegistryOptions {
   createProjectId?: ProjectIdFactory;
   /** Optional clock for deterministic marker creation tests. */
   now?: Clock;
+  /**
+   * Optional reporter for malformed markers skipped during discovery.
+   *
+   * Defaults to `logInvalidMarkerToStderr`; stdout is never used because the stdio adapter
+   * reserves it for MCP protocol frames.
+   */
+  onInvalidMarker?: InvalidMarkerReporter;
+  /**
+   * Optional reporter for a marked project whose entity content cannot be loaded at discovery.
+   *
+   * Defaults to `logProjectLoadErrorToStderr`. The project is skipped; other projects still load.
+   */
+  onProjectLoadError?: ProjectLoadErrorReporter;
+}
+
+/**
+ * One marked project whose `.worktracker` content could not be loaded into runtime state.
+ */
+export interface ProjectLoadError {
+  /** Project root that owns the unloadable content. */
+  root: string;
+  /** Portable id from the (valid) marker, so logs name the project agents know. */
+  projectId: ProjectId;
+  /** Load failure message; parse errors already name the offending entity file. */
+  message: string;
+  /**
+   * `skipped` when discovery left the project unregistered; `kept-previous` when a live refresh
+   * failed and the last good state stays registered.
+   */
+  outcome: "skipped" | "kept-previous";
+}
+
+/** Callback that surfaces one project content load failure. */
+export type ProjectLoadErrorReporter = (issue: ProjectLoadError) => void;
+
+/**
+ * Default project load reporter: one stderr line per failure (stdout is the MCP channel).
+ */
+export function logProjectLoadErrorToStderr(issue: ProjectLoadError): void {
+  const action = issue.outcome === "skipped" ? "skipping project" : "keeping last good state for project";
+  process.stderr.write(`file-kanban: ${action} ${issue.projectId} (${issue.root}): ${issue.message}\n`);
+}
+
+/** Callback that surfaces one malformed marker skipped by discovery or the marker watcher. */
+export type InvalidMarkerReporter = (issue: InvalidProjectMarker) => void;
+
+/**
+ * Default reporter: write one line per skipped marker to stderr.
+ *
+ * Stderr is safe for both the stdio MCP process (MCP clients capture it as server logs) and the
+ * viewer process (operators see it in their terminal).
+ */
+export function logInvalidMarkerToStderr(issue: InvalidProjectMarker): void {
+  process.stderr.write(`file-kanban: skipping invalid project marker ${issue.message}\n`);
 }
 
 /**
@@ -231,6 +293,16 @@ class InMemoryProjectRegistry implements ProjectRegistry {
   private readonly now: Clock;
 
   /**
+   * Reporter for malformed markers that boot discovery skips instead of failing startup.
+   */
+  private readonly onInvalidMarker: InvalidMarkerReporter;
+
+  /**
+   * Reporter for marked projects whose entity content cannot be loaded during discovery.
+   */
+  private readonly onProjectLoadError: ProjectLoadErrorReporter;
+
+  /**
    * Seed the registry with already-built project states.
    */
   constructor(options: CreateProjectRegistryOptions) {
@@ -238,6 +310,8 @@ class InMemoryProjectRegistry implements ProjectRegistry {
     this.buildProjectState = options.buildProjectState ?? buildProjectStateFromCore;
     this.createProjectId = options.createProjectId ?? createRandomProjectId;
     this.now = options.now ?? (() => new Date());
+    this.onInvalidMarker = options.onInvalidMarker ?? logInvalidMarkerToStderr;
+    this.onProjectLoadError = options.onProjectLoadError ?? logProjectLoadErrorToStderr;
 
     for (const project of options.initialProjects ?? []) {
       this.projectsByRoot.set(path.resolve(project.root), { ...project, root: path.resolve(project.root) });
@@ -288,14 +362,30 @@ class InMemoryProjectRegistry implements ProjectRegistry {
    *
    * The core discovery walker owns marker traversal rules, including ignore handling and stopping
    * at the first marker under a project root. The registry's job is to turn each marker into fresh
-   * runtime state and cache it by root.
+   * runtime state and cache it by root. Malformed markers are reported and skipped so one bad
+   * `project.json` cannot abort boot for every other project under the watch roots. Likewise a
+   * project whose entity files fail to parse is reported and left unregistered; filesystem errors
+   * still propagate because they usually mean the watch root itself is unusable.
    */
   async discover(): Promise<ProjectState[]> {
-    const discoveredProjects = await discoverProjects(this.watchRoots);
+    const discoveredProjects = await discoverProjects(this.watchRoots, { onInvalidMarker: this.onInvalidMarker });
     const states: ProjectState[] = [];
 
     for (const discoveredProject of discoveredProjects) {
-      states.push(await this.registerDiscovered(discoveredProject.root, discoveredProject.marker));
+      try {
+        states.push(await this.registerDiscovered(discoveredProject.root, discoveredProject.marker));
+      } catch (error) {
+        if (!isProjectContentError(error)) {
+          throw error;
+        }
+
+        this.onProjectLoadError({
+          root: path.resolve(discoveredProject.root),
+          projectId: discoveredProject.marker.projectId,
+          message: error.message,
+          outcome: "skipped"
+        });
+      }
     }
 
     return states;

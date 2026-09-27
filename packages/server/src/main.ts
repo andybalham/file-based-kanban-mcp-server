@@ -17,9 +17,17 @@ export type {
   ProjectIdFactory,
   ProjectStateBuilder,
   RegisteredProject,
-  RegistryErrorCode
+  RegistryErrorCode,
+  InvalidMarkerReporter,
+  ProjectLoadError,
+  ProjectLoadErrorReporter
 } from "./registry.js";
-export { createProjectRegistry, RegistryError } from "./registry.js";
+export {
+  createProjectRegistry,
+  logInvalidMarkerToStderr,
+  logProjectLoadErrorToStderr,
+  RegistryError
+} from "./registry.js";
 
 export {
   DEFAULT_HTTP_PORT,

@@ -283,6 +283,61 @@ test("discover registers pre-marked projects from watch roots without init", asy
   assert.equal(registry.resolveProject("wt_discovered_a").index.byId.size, 0);
 });
 
+test("discover skips malformed markers and reports them instead of failing startup", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-malformed-");
+  const validRoot = path.join(watchRoot, "repo-valid");
+  const malformedRoot = path.join(watchRoot, "repo-malformed");
+
+  await writeMarkedProject(validRoot, "wt_valid", "Valid");
+  await fs.mkdir(path.join(malformedRoot, ".worktracker"), { recursive: true });
+  await fs.writeFile(path.join(malformedRoot, ".worktracker", "project.json"), '{ "id": "stale" }\n', "utf8");
+
+  const reported = [];
+  const registry = await bootstrapProjectRegistry({
+    watchRoots: [watchRoot],
+    onInvalidMarker: (issue) => reported.push(issue)
+  });
+
+  assert.deepEqual(
+    registry.listProjects().map((project) => project.projectId),
+    ["wt_valid"]
+  );
+  assert.deepEqual(
+    reported.map((issue) => issue.root),
+    [malformedRoot]
+  );
+});
+
+test("discover skips a project with unparseable entity files and still loads the others", async () => {
+  const watchRoot = await makeTempRoot("file-kanban-registry-bad-entity-");
+  const validRoot = path.join(watchRoot, "repo-valid");
+  const brokenRoot = path.join(watchRoot, "repo-broken");
+
+  await writeMarkedProject(validRoot, "wt_valid", "Valid");
+  await writeMarkedProject(brokenRoot, "wt_broken", "Broken");
+  await fs.mkdir(path.join(brokenRoot, ".worktracker", "entities"), { recursive: true });
+  await fs.writeFile(
+    path.join(brokenRoot, ".worktracker", "entities", "T-001-broken.md"),
+    "---\nid: [unclosed\n---\n",
+    "utf8"
+  );
+
+  const reported = [];
+  const registry = await bootstrapProjectRegistry({
+    watchRoots: [watchRoot],
+    onProjectLoadError: (issue) => reported.push(issue)
+  });
+
+  assert.deepEqual(
+    registry.listProjects().map((project) => project.projectId),
+    ["wt_valid"]
+  );
+  assert.equal(reported.length, 1);
+  assert.equal(reported[0].projectId, "wt_broken");
+  assert.equal(reported[0].outcome, "skipped");
+  assert.match(reported[0].message, /T-001-broken\.md: Frontmatter is not valid YAML/);
+});
+
 test("bootstrapProjectRegistry discovers pre-marked projects during server startup", async () => {
   const watchRoot = await makeTempRoot("file-kanban-registry-bootstrap-");
   const projectRoot = path.join(watchRoot, "repo");
