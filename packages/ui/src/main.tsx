@@ -31,7 +31,7 @@ import {
   ViewerApiError,
   createViewerApiClient
 } from "./api";
-import { copyCommitLabel, formatCommitLabel } from "./clipboard";
+import { copyCommitLabel, copyImplementationPrompt, formatCommitLabel } from "./clipboard";
 import {
   blockedByNote,
   blockedTasks,
@@ -1909,6 +1909,9 @@ function EntityDrawer({
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  // Separate feedback state so the prompt button and the commit label button confirm independently.
+  const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const promptCopyTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const copyTimerRef = useRef<number | null>(null);
@@ -1970,6 +1973,10 @@ function EntityDrawer({
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current);
       }
+
+      if (promptCopyTimerRef.current !== null) {
+        window.clearTimeout(promptCopyTimerRef.current);
+      }
     },
     []
   );
@@ -1977,6 +1984,7 @@ function EntityDrawer({
   /** Reset the temporary copy feedback whenever drawer navigation changes the active label. */
   useEffect(() => {
     setCopyState("idle");
+    setPromptCopyState("idle");
   }, [commitLabel]);
 
   const close = useCallback(() => {
@@ -2014,6 +2022,29 @@ function EntityDrawer({
 
     copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), 1800);
   }, [detail]);
+
+  /**
+   * Copy an LLM implementation prompt for the current entity. Like the commit label action this
+   * only writes to the clipboard: no mutation endpoint is called and no entity state changes.
+   */
+  const copyCurrentImplementationPrompt = useCallback(async () => {
+    if (detail === null) {
+      return;
+    }
+
+    if (promptCopyTimerRef.current !== null) {
+      window.clearTimeout(promptCopyTimerRef.current);
+    }
+
+    try {
+      await copyImplementationPrompt(detail, projectId, navigator.clipboard);
+      setPromptCopyState("copied");
+    } catch {
+      setPromptCopyState("failed");
+    }
+
+    promptCopyTimerRef.current = window.setTimeout(() => setPromptCopyState("idle"), 1800);
+  }, [detail, projectId]);
 
   /**
    * Match the prototype keyboard model: Escape closes; Backspace walks relation history first.
@@ -2077,6 +2108,27 @@ function EntityDrawer({
                 onClick={copyCurrentCommitLabel}
               >
                 <CopyIcon />
+              </button>
+            )}
+            {detail === null ? null : (
+              <button
+                className={
+                  promptCopyState === "copied"
+                    ? "drawer-icon-button drawer-icon-button-confirmed"
+                    : promptCopyState === "failed"
+                      ? "drawer-icon-button drawer-icon-button-error"
+                      : "drawer-icon-button"
+                }
+                type="button"
+                title={
+                  promptCopyState === "copied"
+                    ? `Copied implementation prompt for ${detail.id}`
+                    : `Copy implementation prompt for ${detail.id}`
+                }
+                aria-label={`Copy implementation prompt for ${detail.id}`}
+                onClick={copyCurrentImplementationPrompt}
+              >
+                <PromptIcon />
               </button>
             )}
             <button className="drawer-icon-button" type="button" title="Close (Esc)" onClick={close}>
@@ -2510,6 +2562,16 @@ function CopyIcon() {
     <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
       <rect x="5.2" y="4.2" width="7.2" height="8.3" rx="1.3" fill="none" stroke="currentColor" />
       <path d="M3.6 10.9V3.8c0-.7.5-1.2 1.2-1.2h5.8" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline icon (terminal prompt chevron and cursor) for copying the LLM implementation prompt. */
+function PromptIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3.5 5 L6.5 8 L3.5 11" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 11.5 H12.5" fill="none" stroke="currentColor" strokeLinecap="round" />
     </svg>
   );
 }
