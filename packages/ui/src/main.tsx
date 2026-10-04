@@ -282,9 +282,12 @@ function App() {
     collapseSeededProjectRef.current = null;
     setCollapsed(new Set());
     setSelectedEntityId(null);
+    // Drop the previous project's snapshot immediately. Live refreshes keep the current board on
+    // screen while they load, so without this reset a project switch would keep showing the old
+    // project's rows under the new project's header until the first fetch completed.
+    setData({ board: null, graph: null });
 
     if (selectedProjectId === null) {
-      setData({ board: null, graph: null });
       return;
     }
 
@@ -714,7 +717,11 @@ function ActiveView({
   tab: ViewerTab;
   toggleCollapsed(id: string): void;
 }) {
-  if (isLoading) {
+  // Only show the loading placeholder when there is no snapshot to display. During a live refresh
+  // the previous board stays mounted until the new one arrives; swapping it for the placeholder
+  // would collapse the page height and throw away the reader's scroll position (and view-local
+  // state such as graph pan/zoom) on every WebSocket push.
+  if (isLoading && board === null) {
     return <EmptyState title="Loading project data" body="Fetching project data." />;
   }
 
