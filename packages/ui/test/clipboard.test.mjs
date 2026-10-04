@@ -25,7 +25,7 @@ test("task implementation prompts point at the MCP server, delegate to a sub-age
       "4. Delegate the implementation to a sub-agent, choosing a model suited to the task's complexity, and have it follow the repository's agent instructions.",
       "5. Run the project's build, tests, and lint, and fix any failures.",
       "6. Once the checks pass, set T-103 to `done` with `set_status`.",
-      "7. Never commit. Report what changed and wait for my confirmation before committing."
+      "7. Never commit: committing is my responsibility, not yours. Report what changed and leave the changes uncommitted for me to review and commit."
     ].join("\n")
   );
 });
@@ -39,7 +39,10 @@ test("story implementation prompts work through every child task before reportin
   assert.match(prompt, /delegate its implementation to a sub-agent, choosing a model suited to the task's complexity/);
   assert.match(prompt, /Once the checks pass, set that task to `done` with `set_status`\./);
   assert.match(prompt, /Repeat from step 2 until every task under S-014 is done\./);
-  assert.match(prompt, /Never commit\. Report what changed and wait for my confirmation before committing\.$/);
+  assert.match(
+    prompt,
+    /Never commit: committing is my responsibility, not yours\. Report what changed and leave the changes uncommitted for me to review and commit\.$/
+  );
   assert.doesNotMatch(prompt, /Set S-014 to/);
 });
 
@@ -57,7 +60,7 @@ test("epic implementation prompts stop for confirmation after each story", () =>
       "4. Run the project's build, tests, and lint, and fix any failures.",
       "5. Once the checks pass, set that task to `done` with `set_status`.",
       "6. Repeat from step 3 until every task in that story is done; if the remaining tasks are blocked, stop and report what is blocking.",
-      "7. Never commit. Stop after the story, report what changed, and wait for my confirmation before committing or starting the next story."
+      "7. Never commit: committing is my responsibility, not yours. Stop after the story, report what changed, leave the changes uncommitted for me to review and commit, and wait for my confirmation before starting the next story."
     ].join("\n")
   );
 });

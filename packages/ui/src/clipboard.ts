@@ -36,8 +36,8 @@ export type ImplementationPromptEntity = Pick<EntityDetail, "id" | "type" | "tit
  * description, dependencies, and children from the file-based Kanban MCP server, so the copied text
  * can never go stale against the frontmatter that is authoritative for the project. Three operator
  * rules are always present: use the MCP server for board access, delegate the implementation to a
- * sub-agent on a model that fits the task, and never commit without confirmation. Status is the
- * agent's to update (`in-progress` on start, `done` once checks pass); only the commit is held.
+ * sub-agent on a model that fits the task, and never commit, because committing is the operator's
+ * responsibility. Status is the agent's to update (`in-progress` on start, `done` once checks pass).
  *
  * Only tasks store status, so stories and epics are phrased as "work through the child tasks"
  * instead of asking the agent to set a status on a composite. A story runs to completion before
@@ -65,7 +65,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
           `Pick the next ready task in that story, set it to \`in-progress\` with \`set_status\`, ${delegateStep}`,
           ...checkSteps,
           "Repeat from step 3 until every task in that story is done; if the remaining tasks are blocked, stop and report what is blocking.",
-          "Never commit. Stop after the story, report what changed, and wait for my confirmation before committing or starting the next story."
+          "Never commit: committing is my responsibility, not yours. Stop after the story, report what changed, leave the changes uncommitted for me to review and commit, and wait for my confirmation before starting the next story."
         ]
       : entity.type === "task"
       ? [
@@ -75,7 +75,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
           "Delegate the implementation to a sub-agent, choosing a model suited to the task's complexity, and have it follow the repository's agent instructions.",
           "Run the project's build, tests, and lint, and fix any failures.",
           `Once the checks pass, set ${entity.id} to \`done\` with \`set_status\`.`,
-          "Never commit. Report what changed and wait for my confirmation before committing."
+          "Never commit: committing is my responsibility, not yours. Report what changed and leave the changes uncommitted for me to review and commit."
         ]
       : [
           `Read \`${entityResource}\` and its children through the MCP server for the descriptions, dependencies, and acceptance criteria.`,
@@ -83,7 +83,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
           `Set that task to \`in-progress\` with \`set_status\`, ${delegateStep}`,
           ...checkSteps,
           `Repeat from step 2 until every task under ${entity.id} is done.`,
-          "Never commit. Report what changed and wait for my confirmation before committing."
+          "Never commit: committing is my responsibility, not yours. Report what changed and leave the changes uncommitted for me to review and commit."
         ];
 
   return [
