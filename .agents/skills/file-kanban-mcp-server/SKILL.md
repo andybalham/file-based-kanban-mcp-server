@@ -1,84 +1,68 @@
 ---
 name: file-kanban-mcp-server
-description: Use this skill whenever the user wants to configure, operate, troubleshoot, or delegate work through the File-Based Kanban MCP Server. This includes prompts about file-kanban, `.worktracker` projects, MCP tools or resources, ready and blocked work, validation warnings, same-type dependencies, generated board or graph artifacts, the read-only viewer, or setting up `file-kanban-mcp` in an agent coding client. Prefer this skill for any multi-step agent workflow that should mutate kanban work through MCP instead of direct Markdown edits.
+description: Use this skill whenever the user wants to plan, track, or implement work through the File-Based Kanban MCP Server. This includes prompts about file-kanban, `.worktracker` projects, picking up or finishing a task, ready and blocked work, decomposing requirements into epics, stories, and tasks, dependencies, the critical path, or validation errors and warnings. Prefer this skill for any agent workflow that should read or change kanban work through MCP instead of direct Markdown edits.
 ---
 
 # File-Based Kanban MCP Server
 
-Use the MCP tools for writes and queries. Treat `.worktracker` Markdown as the persisted source of
-truth and its indexes and graphs as generated output; do not edit them to perform a mutation.
+Read and change the board only through the MCP tools and resources. Never edit `.worktracker`
+files by hand, including to work around a tool error: entity files are validated as one graph, and
+the indexes and graphs are regenerated output.
 
 ## Resolve The Project
 
-- Call `list_projects` when the project is unknown or ambiguous.
-- Keep the returned portable `projectId` in working context.
-- Pass `projectId` explicitly when more than one project is registered.
-- Call `init` with the required project `title` and repository `root` only when
-  `.worktracker/project.json` is absent. Pass optional requirements text as `intent`, and retain the
-  returned `projectId` for later calls.
+- `projectId` may be omitted when exactly one project is registered. If a call fails with
+  `AMBIGUOUS_PROJECT`, call `list_projects` and pass `projectId` on every later call.
+- Call `init` with a `title` and the repository `root` only when `.worktracker/project.json` is
+  absent. Optional `intent` seeds the requirements text once, at creation.
 
-## Select The Interface
+## Know The Model
 
-Use the narrowest tool or resource that answers the request:
+- Hierarchy is `epic -> story -> task`. Stories need an epic parent, tasks need a story parent,
+  and epics have none.
+- Dependencies are same-type only: epic to epic, story to story, task to task.
+- In `link_dependency` and `unlink_dependency`, `from` depends on `to`: `to` must be done first.
+- Only tasks store status: `todo`, `in-progress`, or `done`. `set_status` on a story or epic fails
+  with `NOT_A_TASK`; their status, and every `blocked` state, is computed.
+- A task can be blocked by its own dependencies or by a blocked parent story or epic.
+- `update_entity` changes only `title`, `body`, `estimate`, and `tags`. Use `move_entity` for the
+  parent, the link tools for dependencies, and `set_status` for status.
+- Descriptions and acceptance criteria live in `body`. `estimate` is a task's weight in
+  `critical_path`; a task without one counts as 1.
+- `archive_entity` is a soft delete: it marks the entity archived and keeps the file.
 
-- `project://list` or `list_projects`: discover registered projects.
-- `requirements://{project}/source`: read the source requirements before decomposing work.
-- `entity://{project}/{id}`: inspect one epic, story, or task.
-- `index://{project}/board`: read the generated board summary.
-- `graph://{project}/dependencies`: inspect project-wide dependency context.
-- `graph://{project}/epic/{id}`: inspect one epic and its descendants.
-- `query_ready`: find actionable tasks; do not infer readiness from Markdown files.
-- `query_blocked`: find blocked entities and their direct or propagated blockers.
-- `critical_path`: find the longest dependency path for the requested entity type.
-- `validate`: obtain current errors and warnings.
+## Implement Work
 
-Use mutation tools according to intent:
+1. Call `query_ready` to find actionable tasks. It returns ids only, so read
+   `entity://{project}/{id}`, and the parent story when needed, for the description and acceptance
+   criteria. Do not infer readiness from files or from the board index.
+2. Set the chosen task to `in-progress` with `set_status` before changing code.
+3. Do the work and verify it against the acceptance criteria.
+4. Set the task to `done` with `set_status`, then call `query_ready` again for the next task.
+5. If nothing is ready, call `query_blocked` and report whether each blocker is the task's own
+   dependency or one propagated from its parent story or epic.
 
-- `create_entity` for a new epic, story, or task.
-- `update_entity` for mutable metadata.
-- `set_status` for task status; epic and story status is computed.
-- `link_dependency` and `unlink_dependency` for dependency changes.
-- `move_entity` for parent changes.
-- `archive_entity` for archival.
+## Plan Work
 
-## Preserve Domain Constraints
-
-- Build only `epic -> story -> task` parent relationships.
-- Link dependencies only between entities of the same type.
-- Store status only on tasks: `todo`, `in-progress`, or `done`.
-- Treat epic and story status, including downward blocking gates, as computed results.
-- Preserve structured errors for cycles, cross-type dependencies, dangling parents, invalid
-  statuses, and immutable-field updates. Do not bypass them with manual file edits.
-
-## Execute Multi-Step Work
-
-When decomposing requirements:
-
-1. Read the requirements resource.
+1. Read `requirements://{project}/source` before decomposing.
 2. Create epics for large outcomes, stories for coherent deliverables, and tasks for concrete
-   implementation steps.
-3. Keep task titles imperative and specific.
-4. Add only same-type dependencies.
-5. Call `validate` after the mutation batch.
+   implementation steps, parents first. Keep task titles imperative and specific, and put
+   acceptance criteria in `body`.
+3. Add dependencies with `dependsOn` at creation or with `link_dependency` afterwards.
+4. Call `validate` after the batch. Fix errors before continuing; report warnings to the user as
+   cleanup work.
 
-When changing existing work:
+`critical_path` returns the longest dependency chain for one entity type and defaults to tasks.
+`graph://{project}/dependencies` and `graph://{project}/epic/{id}` return Mermaid text, and
+`index://{project}/board` returns the Markdown board summary.
 
-1. Read the relevant entity or graph when current state affects the mutation.
-2. Apply the smallest appropriate mutation tool sequence.
-3. Call `validate` after manual edits or a substantial mutation batch.
-4. Report the `changedFiles` returned by successful mutations.
+## Report And Repair
 
-When explaining blocked work, use `query_blocked` and distinguish an entity's own dependency from
-a blocker propagated by its parent story or epic. When reporting ready work, use `query_ready` and
-state why the task is actionable.
+- Mutations return `changedFiles`. Report them, because the user commits board changes themselves.
+- When a tool returns a structured error, fix the call or the underlying board state through
+  another tool.
+- If the user asked only for a diagnosis, propose the smallest repair sequence without applying
+  it. Apply repairs when the user asked for a fix.
 
-## Handle Safety And Recovery
-
-- Keep the HTTP/browser viewer read-only; perform mutations through MCP.
-- Avoid running more than one mutating MCP stdio process against the same project.
-- Treat validation errors as blocking and warnings as human-visible cleanup work.
-- If the user asked only for diagnosis, propose the smallest repair sequence without applying it.
-  Apply repairs when the user explicitly asked for a fix.
-
-For client installation or runtime configuration details, consult `README.md` and
-`docs/operator-workflows.md` rather than reproducing those instructions in this skill.
+Client installation and server configuration are covered in `README.md` and
+`docs/operator-workflows.md`.
