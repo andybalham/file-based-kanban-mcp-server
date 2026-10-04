@@ -563,8 +563,15 @@ button:disabled {
   outline: none;
 }
 
+/*
+ * Row containers use a single `minmax(0, 1fr)` track instead of the implicit `auto` track.
+ * An `auto` track grows to the min-content width of its rows, so one long nowrap title widened
+ * every row past the fixed-width card and the card's `overflow: hidden` clipped the status badge.
+ * Capping the track at the card width lets `.entity-title` shrink and show its ellipsis instead.
+ */
 .board-tree {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .epic-group + .epic-group {
@@ -692,8 +699,10 @@ button:disabled {
   color: var(--fg-faint);
 }
 
+/* Same width cap as `.board-tree`: keep flat rows inside the card so titles truncate before badges clip. */
 .flat-view {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .view-hint {
@@ -707,6 +716,7 @@ button:disabled {
 
 .flat-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .flat-row,
@@ -1297,11 +1307,15 @@ button:disabled {
   line-height: 1.5;
 }
 
+/* The "waiting on" detail may shrink and truncate so it can never push the status badge out of the row. */
 .row-detail {
+  min-width: 0;
+  overflow: hidden;
   color: var(--fg-faint);
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   font-size: 12px;
   font-style: italic;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
