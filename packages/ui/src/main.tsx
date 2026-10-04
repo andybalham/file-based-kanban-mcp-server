@@ -37,6 +37,7 @@ import {
   blockedTasks,
   buildTaskGraph,
   collapsibleBoardIds,
+  defaultCollapsedBoardIds,
   graphDisplayStatus,
   indexBoard,
   layoutGraph,
@@ -160,6 +161,14 @@ function App() {
   const hasExpandedRows = collapsibleIds.some((id) => !collapsed.has(id));
   const selectedProjectRef = useRef<ProjectId | null>(selectedProjectId);
   const refreshSequenceRef = useRef(0);
+  /**
+   * Project whose default collapse state has already been seeded from a loaded board.
+   *
+   * Done epics and stories start collapsed, but only for the first snapshot of a project. Tracking
+   * the seeded project keeps WebSocket-triggered refreshes from re-collapsing rows the user has
+   * opened by hand.
+   */
+  const collapseSeededProjectRef = useRef<ProjectId | null>(null);
 
   /**
    * Keep async refresh completions scoped to the currently selected project.
@@ -193,6 +202,13 @@ function App() {
           refreshSequenceRef.current !== refreshSequence
         ) {
           return;
+        }
+
+        // Seed the local collapse set once per project so finished epics and stories open folded.
+        // Later refreshes for the same project leave the set alone to preserve manual toggles.
+        if (collapseSeededProjectRef.current !== projectId) {
+          collapseSeededProjectRef.current = projectId;
+          setCollapsed(new Set(defaultCollapsedBoardIds(board)));
         }
 
         setData({ board, graph });
@@ -255,6 +271,9 @@ function App() {
    * Reset project-local shell state and refetch the read model when the selected project changes.
    */
   useEffect(() => {
+    // Clear the previous project's collapse state and forget its seed marker so the next loaded
+    // board for the newly selected project applies the done-groups-collapsed default again.
+    collapseSeededProjectRef.current = null;
     setCollapsed(new Set());
     setSelectedEntityId(null);
 

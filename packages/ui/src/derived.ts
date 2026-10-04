@@ -265,6 +265,31 @@ export function collapsibleBoardIds(board: BoardResponse | null): EntityId[] {
 }
 
 /**
+ * Return the collapsible epic/story ids that should start collapsed when a board is first shown.
+ *
+ * Finished groups are no longer actionable, so the Board opens with them folded away and leaves the
+ * remaining work visible. Only server-computed `done` composites qualify: `empty` groups have no
+ * children to hide, and every other status still contains work a reader needs to see. Done stories
+ * are included even when their epic is also done so that expanding a finished epic reveals compact
+ * story rows instead of every completed task at once.
+ *
+ * The result is a subset of `collapsibleBoardIds`, in the same order, which keeps the
+ * "Collapse all / Expand all" control consistent with the rows this default actually affects.
+ */
+export function defaultCollapsedBoardIds(board: BoardResponse | null): EntityId[] {
+  if (board === null) {
+    return [];
+  }
+
+  return board.epics.flatMap((epic) => [
+    ...(epic.children.length > 0 && epic.effectiveStatus === "done" ? [epic.id] : []),
+    ...epic.children.flatMap((story) =>
+      story.children.length > 0 && story.effectiveStatus === "done" ? [story.id] : []
+    )
+  ]);
+}
+
+/**
  * Format the inline blocked note used on Board task rows.
  *
  * The note is tied to the server-computed effective status. A todo task with no blockers should not

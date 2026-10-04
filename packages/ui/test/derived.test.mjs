@@ -6,6 +6,7 @@ import {
   buildTaskGraph,
   blockedByNote,
   collapsibleBoardIds,
+  defaultCollapsedBoardIds,
   indexBoard,
   layoutGraph,
   progress,
@@ -91,6 +92,43 @@ test("board row helpers only collapse visible groups and format blocked notes", 
   assert.deepEqual(collapsibleBoardIds(boardWithEmptyGroups), ["E-001", "S-001", "S-002", "E-002", "S-003", "E-003"]);
   assert.equal(blockedByNote(board.epics[0].children[0].children[0]), null);
   assert.equal(blockedByNote(board.epics[0].children[0].children[1]), "waiting on T-003");
+});
+
+test("done epics and stories with children start collapsed while unfinished groups stay open", () => {
+  // A done story inside an unfinished epic must collapse on its own, and a done composite with no
+  // children must be skipped because it has no rows to hide.
+  const boardWithMixedGroups = {
+    epics: [
+      {
+        ...board.epics[0],
+        children: [
+          ...board.epics[0].children,
+          {
+            id: "S-005",
+            type: "story",
+            title: "Done story in open epic",
+            effectiveStatus: "done",
+            blockedBy: [],
+            progress: { done: 1, total: 1 },
+            children: [task("T-005", "Another done task", "done", "done", [])]
+          }
+        ]
+      },
+      board.epics[1],
+      {
+        id: "E-004",
+        type: "epic",
+        title: "Done epic without stories",
+        effectiveStatus: "done",
+        blockedBy: [],
+        progress: { done: 0, total: 0 },
+        children: []
+      }
+    ]
+  };
+
+  assert.deepEqual(defaultCollapsedBoardIds(boardWithMixedGroups), ["S-005", "E-002", "S-003"]);
+  assert.deepEqual(defaultCollapsedBoardIds(null), []);
 });
 
 test("task graph scopes by epic and renders prerequisite to dependent edges", () => {
