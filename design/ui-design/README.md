@@ -229,7 +229,10 @@ hard-coded into the Mermaid `classDef`s and the SVG graph nodes — keep them in
 ### Radius / spacing
 - Cards & main containers: radius `12px`. Popovers: `10px`. Buttons/chips: `6–8px`. Pills/badges:
   `999px`. Checkbox: `4px`.
-- Main content column max-width `940px` (board/ready/blocked), `1180px` (graph), centered.
+- Main content column is fluid: it fills the main scroll region's width in every view
+  (board/ready/blocked/graph) and resizes with the page. No max-width cap; the scroll region's
+  `18px` side padding supplies the gutters. Long row titles truncate with an ellipsis so the
+  status badge always stays visible.
 - Row padding: `var(--row-py) 16px` with **left indent `16 + depth*22px`** per tree level.
 - Custom scrollbar (`.scroll`): `11px`, thumb `--border` with a `3px` `--canvas` border, hover
   `--fg-faint`.
@@ -244,7 +247,7 @@ hard-coded into the Mermaid `classDef`s and the SVG graph nodes — keep them in
 - **Tab bar** (`--bg`, bottom border): `Board` · `Ready`(count) · `Blocked`(count) · `Graph`.
   Active tab = `--fg` bold with a `2px` accent underline; counts are mono pills (accent-tinted when
   active). On the Board tab only, a right-aligned **"Collapse all / Expand all"** text button.
-- **Main scroll region** (`--canvas`): holds the active view's centered card.
+- **Main scroll region** (`--canvas`): holds the active view's full-width card.
 
 #### Project picker
 - Trigger button: small accent square + project title (`13.5/600`) + filesystem `root` (mono,

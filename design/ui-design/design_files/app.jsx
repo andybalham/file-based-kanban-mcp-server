@@ -542,14 +542,14 @@ function App() {
       {/* Scroll region */}
       {tab === "graph" ? (
         <main style={{ flex: 1, minHeight: 0, padding: "18px 18px 22px" }}>
-          <div key={projectId} style={{ height: "100%", maxWidth: 1180, margin: "0 auto" }}>
+          <div key={projectId} style={{ height: "100%" }}>
             <GraphView projectId={projectId} dark={t.dark} accent={t.accent} onSelect={setSelectedId} />
           </div>
         </main>
       ) : (
         <main className="scroll" style={{ flex: 1, overflow: "auto", padding: "18px 18px 64px" }}>
           <div key={projectId + tab} style={{
-            maxWidth: 940, margin: "0 auto", background: "var(--bg)",
+            background: "var(--bg)",
             border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden",
             boxShadow: "var(--shadow)",
           }}>

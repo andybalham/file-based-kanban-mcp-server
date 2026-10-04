@@ -393,8 +393,12 @@ button:disabled {
   padding: 18px 18px 64px;
 }
 
+/*
+ * The card fills the scroll area so it grows and shrinks with the page instead of stopping at a
+ * fixed cap. `.main-scroll` padding supplies the side gutters at every viewport width.
+ */
 .view-card {
-  width: min(940px, 100%);
+  width: 100%;
   margin: 0 auto;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -403,8 +407,8 @@ button:disabled {
   box-shadow: var(--shadow);
 }
 
+/* The graph card inherits the full-width rule above and only adds a minimum canvas height. */
 .view-card-graph {
-  width: min(1180px, 100%);
   min-height: min(680px, calc(100vh - 164px));
 }
 
