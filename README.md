@@ -176,6 +176,37 @@ The underlying package bin is also available as `.\node_modules\.bin\file-kanban
 Windows or `./node_modules/.bin/file-kanban-viewer` on POSIX shells. The command prints the local
 URL to open and remains read-only; all project mutations still go through MCP tools.
 
+### start-viewer.ps1
+
+`start-viewer.ps1` in the repository root is a thin PowerShell wrapper around `npm run viewer` and
+`npm run viewer:built`. It maps parameters onto the runtime environment variables, launches the
+viewer in the foreground, and restores the caller's `FILE_KANBAN_PORT` and
+`FILE_KANBAN_WATCH_ROOTS` values when the viewer stops, so the session's environment is not left
+reconfigured for an MCP stdio server started from the same shell.
+
+| Parameter | Default | Purpose |
+| --- | --- | --- |
+| `-Port` | `4010` | HTTP/WebSocket listen port, mapped to `FILE_KANBAN_PORT`. Must be an integer from `1` to `65535`. Note that this differs from the `4000` default used when the variable is unset. |
+| `-Root` | `C:\Users\MONTEITH\source\repos` | One or more directories scanned and watched for `.worktracker/project.json` markers, mapped to `FILE_KANBAN_WATCH_ROOTS`. Multiple roots are joined with the platform path delimiter for you. |
+| `-SkipBuild` | off | Serves the existing `dist` output with `npm run viewer:built` instead of rebuilding first. |
+
+The default `-Root` is specific to the original author's machine, so pass `-Root` explicitly or
+edit the default in the script for your own checkout location.
+
+```powershell
+# Build, then serve projects under the default root on port 4010.
+.\start-viewer.ps1
+
+# Serve the existing build on another port, watching two roots.
+.\start-viewer.ps1 -Port 4020 -Root C:\src, D:\work -SkipBuild
+```
+
+The script can be invoked from any working directory; it runs npm from the repository root and
+returns to the original location afterwards. It fails before building if any `-Root` path does not
+exist or is not a directory, and it exits with npm's exit code when the viewer command fails. Stop
+the viewer with `Ctrl+C`. `Get-Help .\start-viewer.ps1 -Detailed` prints the same parameter
+documentation from the script's comment-based help.
+
 ## Data Model
 
 A managed project is any repository root that contains `.worktracker/project.json`.
