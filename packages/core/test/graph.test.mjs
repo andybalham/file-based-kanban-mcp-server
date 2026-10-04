@@ -157,9 +157,8 @@ test("blocked reports direct same-type blockers and propagated gate blockers", (
   const resolution = resolveDetailed(index);
 
   assert.deepEqual(blocked(index, resolution.effective, resolution.propagatedBy), [
-    { id: "E-001", type: "epic", blockedBy: [] },
+    // S-002 keeps a workable task (T-003), so it and E-001 roll up as todo rather than blocked.
     { id: "S-001", type: "story", blockedBy: ["S-002"] },
-    { id: "S-002", type: "story", blockedBy: [] },
     { id: "T-001", type: "task", blockedBy: ["S-001"] },
     { id: "T-002", type: "task", blockedBy: ["T-003"] }
   ]);

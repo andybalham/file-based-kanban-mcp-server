@@ -133,6 +133,11 @@ function activeChildStatuses(
 
 /**
  * Roll up child effective statuses into the intrinsic status for a story or epic.
+ *
+ * Precedence follows design §6.4(a): `done` only when everything is done, then active work
+ * (`in-progress`) wins, then workable-but-unstarted work (`todo`), and `blocked` is the fallback
+ * used only when every remaining (non-`done`) child is blocked. A single blocked child therefore
+ * never hides siblings that are active or still workable.
  */
 function rollupStatus(childStatuses: EffectiveStatus[]): EffectiveStatus {
   if (childStatuses.length === 0) {
@@ -143,15 +148,19 @@ function rollupStatus(childStatuses: EffectiveStatus[]): EffectiveStatus {
     return "done";
   }
 
-  if (childStatuses.some((status) => status === "blocked")) {
-    return "blocked";
-  }
-
-  if (childStatuses.some((status) => status === "in-progress" || status === "done")) {
+  if (childStatuses.some((status) => status === "in-progress")) {
     return "in-progress";
   }
 
-  return "todo";
+  // An `empty` child story is displayed as `todo`, so it counts as unstarted work for its epic.
+  // Finished siblings do not promote the parent: without an active child it stays `todo`.
+  if (childStatuses.some((status) => status === "todo" || status === "empty")) {
+    return "todo";
+  }
+
+  // Only `done` and `blocked` children remain, with at least one `blocked`: no remaining work can
+  // proceed, so the composite itself is blocked.
+  return "blocked";
 }
 
 /**

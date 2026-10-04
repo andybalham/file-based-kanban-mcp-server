@@ -531,8 +531,8 @@ test("writeGeneratedArtifacts produces deterministic navigation and graph output
   await assertMermaidClickLinksResolve(projectRoot, path.join("graphs", "E-001.mmd"));
 
   const dependencies = await readGenerated(projectRoot, path.join("graphs", "dependencies.mmd"));
-  assert.match(dependencies, /subgraph Epics[\s\S]*E001\["E-001 Project foundation"\]:::inprogress[\s\S]*end/);
-  assert.match(dependencies, /subgraph Stories[\s\S]*S001\["S-001 Initial board"\]:::inprogress[\s\S]*end/);
+  assert.match(dependencies, /subgraph Epics[\s\S]*E001\["E-001 Project foundation"\]:::todo[\s\S]*end/);
+  assert.match(dependencies, /subgraph Stories[\s\S]*S001\["S-001 Initial board"\]:::todo[\s\S]*end/);
   assert.match(dependencies, /subgraph Tasks[\s\S]*T001\["T-001 Create project marker"\]:::done[\s\S]*T002\["T-002 Render board"\]:::todo[\s\S]*T001 --> T002[\s\S]*end/);
 
   const beforeRegeneration = new Map();

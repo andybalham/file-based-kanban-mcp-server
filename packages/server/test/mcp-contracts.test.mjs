@@ -195,8 +195,7 @@ test("executeMcpQueryTool returns ready tasks and blocked entities with blockers
 
   assert.deepEqual(executeMcpQueryTool(registry, "query_blocked", { projectId: "wt_query" }), {
     blocked: [
-      { id: "E-001", type: "epic", blockedBy: [] },
-      { id: "S-001", type: "story", blockedBy: [] },
+      // S-001 still has a ready task (T-001), so it and its epic roll up as todo, not blocked.
       { id: "S-002", type: "story", blockedBy: ["S-001"] },
       { id: "T-003", type: "task", blockedBy: ["T-001"] },
       { id: "T-005", type: "task", blockedBy: ["S-002"] }

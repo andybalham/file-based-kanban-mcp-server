@@ -53,11 +53,38 @@ test("resolveAll blocks todo tasks with incomplete same-type dependencies", () =
     entity({ id: "T-002", type: "task", parent: "S-001", status: "todo" })
   ]);
 
+  // The story still has a workable task (T-002), so neither composite rolls up as blocked.
   assert.deepEqual(statusesAsObject(resolveAll(index)), {
-    "E-001": "blocked",
-    "S-001": "blocked",
+    "E-001": "todo",
+    "S-001": "todo",
     "T-001": "blocked",
     "T-002": "todo"
+  });
+});
+
+test("resolveAll rolls a composite up as blocked only when every unfinished child is blocked", () => {
+  const index = indexFrom([
+    entity({ id: "E-001", type: "epic" }),
+    // S-001: done + blocked children, nothing workable -> blocked.
+    entity({ id: "S-001", type: "story", parent: "E-001" }),
+    entity({ id: "T-001", type: "task", parent: "S-001", status: "done" }),
+    entity({ id: "T-002", type: "task", parent: "S-001", status: "todo", dependsOn: ["T-005"] }),
+    // S-002: blocked + in-progress children -> in-progress wins over todo and blocked.
+    entity({ id: "S-002", type: "story", parent: "E-001" }),
+    entity({ id: "T-003", type: "task", parent: "S-002", status: "todo", dependsOn: ["T-005"] }),
+    entity({ id: "T-004", type: "task", parent: "S-002", status: "in-progress" }),
+    entity({ id: "T-005", type: "task", parent: "S-002", status: "todo" })
+  ]);
+
+  assert.deepEqual(statusesAsObject(resolveAll(index)), {
+    "E-001": "in-progress",
+    "S-001": "blocked",
+    "S-002": "in-progress",
+    "T-001": "done",
+    "T-002": "blocked",
+    "T-003": "blocked",
+    "T-004": "in-progress",
+    "T-005": "todo"
   });
 });
 
@@ -84,9 +111,10 @@ test("resolveAll rolls stories and epics up from child effective statuses", () =
     entity({ id: "T-003", type: "task", parent: "S-002", status: "todo" })
   ]);
 
+  // A mix of done and todo children has no active work, so the composites stay todo.
   assert.deepEqual(statusesAsObject(resolveAll(index)), {
-    "E-001": "in-progress",
-    "S-001": "in-progress",
+    "E-001": "todo",
+    "S-001": "todo",
     "S-002": "todo",
     "T-001": "done",
     "T-002": "todo",

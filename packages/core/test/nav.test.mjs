@@ -123,7 +123,6 @@ test("renderBlocked lists all blocked entity types with direct and propagated bl
 _Generated. Do not edit by hand._
 
 - [E-001 · Auth](../entities/e-001.md) — blocked · waiting on E-002
-- [E-002 · Platform](../entities/e-002.md) — blocked
 - [S-001 · Login](../entities/s-001.md) — blocked · waiting on E-001
 - [S-002 · Sessions](../entities/s-002.md) — blocked · waiting on S-003
 - [T-001 · Form](../entities/t-001.md) — blocked · waiting on E-001

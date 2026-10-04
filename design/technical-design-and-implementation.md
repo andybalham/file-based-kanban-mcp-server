@@ -341,9 +341,13 @@ each level, and a final **downward gate propagation**.
 Roll-up `rollup(node)` over child effective statuses `c`:
 - no (non-archived) children → `empty` (displayed as `todo`; flagged as a warning by `validate()`).
 - `done` if all children are `done`.
-- else `blocked` if any child is `blocked`.
-- else `in-progress` if any child is `in-progress`, or there is a mix of `done` and not-done.
-- else `todo` (all children `todo`).
+- else `in-progress` if any child is `in-progress`.
+- else `todo` if any child is `todo` (or `empty`) — there is still workable, unstarted work, even
+  when sibling children are `done` or `blocked`.
+- else `blocked` (every non-`done` child is `blocked`; `done` children are ignored).
+
+A composite is therefore `blocked` by roll-up only when *none* of its remaining work can proceed;
+a single blocked child never masks workable or active siblings.
 **(b) Same-type dependency rule.** Given an entity's intrinsic status and the effective statuses
 of its same-type dependencies:
 - all dependencies effectively `done`, or none declared → effective = intrinsic.
@@ -360,8 +364,8 @@ This is the exact generalisation of v1's task-resolution rule to all three types
 it. When an entity is *gate-blocked* — i.e. it became `blocked` in (b) because its own intrinsic
 status was `todo`/`empty` and a same-type dependency is incomplete — every non-`done` descendant
 of that entity is also set to `blocked`. Propagation flows **only** from a gate, never from a
-roll-up: a composite that is `blocked` merely because one child is blocked does **not** block its
-other children, so healthy siblings stay workable.
+roll-up: a composite that is `blocked` merely because all of its remaining children are blocked
+is not a gate and adds no further blocking beneath it.
 
 **Resolution order** (memoised over each type's dependency DAG; must terminate even if a cycle
 slipped past `validate()` — guard against revisiting nodes):

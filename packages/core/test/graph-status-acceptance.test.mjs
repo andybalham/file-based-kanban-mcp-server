@@ -83,13 +83,14 @@ test("graph and status acceptance criteria hold together", () => {
   assert.deepEqual(statusesAsObject(resolution.effective), {
     "E-001": "blocked",
     "E-002": "todo",
-    "E-003": "blocked",
-    "E-004": "blocked",
+    // E-003, E-004, and S-005 each still contain a workable child, so they roll up as todo.
+    "E-003": "todo",
+    "E-004": "todo",
     "S-001": "blocked",
     "S-002": "todo",
     "S-003": "blocked",
     "S-004": "todo",
-    "S-005": "blocked",
+    "S-005": "todo",
     "T-001": "blocked",
     "T-002": "todo",
     "T-003": "blocked",
@@ -111,11 +112,8 @@ test("graph and status acceptance criteria hold together", () => {
   assert.deepEqual(ready(index, resolution.effective), ["T-002", "T-004", "T-006", "T-007"]);
   assert.deepEqual(blocked(index, resolution.effective, resolution.propagatedBy), [
     { id: "E-001", type: "epic", blockedBy: ["E-002"] },
-    { id: "E-003", type: "epic", blockedBy: [] },
-    { id: "E-004", type: "epic", blockedBy: [] },
     { id: "S-001", type: "story", blockedBy: ["E-001"] },
     { id: "S-003", type: "story", blockedBy: ["S-004"] },
-    { id: "S-005", type: "story", blockedBy: [] },
     { id: "T-001", type: "task", blockedBy: ["E-001"] },
     { id: "T-003", type: "task", blockedBy: ["S-003"] },
     { id: "T-005", type: "task", blockedBy: ["T-006"] }
