@@ -41,6 +41,7 @@ import {
   graphDisplayStatus,
   indexBoard,
   layoutGraph,
+  orderBoardByDependencies,
   readyTasks,
   summarizeBoard,
   toMermaid,
@@ -195,7 +196,10 @@ function App() {
       setError(null);
 
       try {
-        const [board, graph] = await Promise.all([api.getBoard(projectId, signal), api.getGraph(projectId, signal)]);
+        const [serverBoard, graph] = await Promise.all([api.getBoard(projectId, signal), api.getGraph(projectId, signal)]);
+        // The server lists siblings by id. Reorder once here so every view built from this snapshot
+        // reads top to bottom in dependency order; flat tabs that are specified as id-sorted re-sort.
+        const board = orderBoardByDependencies(serverBoard, graph);
         if (
           signal?.aborted === true ||
           selectedProjectRef.current !== projectId ||

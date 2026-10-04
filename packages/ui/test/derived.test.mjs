@@ -9,6 +9,7 @@ import {
   defaultCollapsedBoardIds,
   indexBoard,
   layoutGraph,
+  orderBoardByDependencies,
   progress,
   readyTasks,
   statusClass,
@@ -129,6 +130,97 @@ test("done epics and stories with children start collapsed while unfinished grou
 
   assert.deepEqual(defaultCollapsedBoardIds(boardWithMixedGroups), ["S-005", "E-002", "S-003"]);
   assert.deepEqual(defaultCollapsedBoardIds(null), []);
+});
+
+test("board siblings are listed prerequisites first at every level with ids breaking ties", () => {
+  // Ids are deliberately the reverse of dependency order so id sorting alone would fail.
+  const unorderedBoard = {
+    epics: [
+      composite("E-001", "epic", [
+        composite("S-001", "story", [
+          task("T-001", "Ships last", "todo", "blocked", ["T-003"], ["T-003"]),
+          task("T-002", "Unlinked", "todo", "todo", []),
+          task("T-003", "Ships first", "todo", "todo", [])
+        ]),
+        composite("S-002", "story", [task("T-004", "Story prerequisite", "todo", "todo", [])])
+      ]),
+      composite("E-002", "epic", [composite("S-003", "story", [task("T-005", "Epic prerequisite", "todo", "todo", [])])]),
+      composite("E-003", "epic", [])
+    ],
+    validationWarnings: [{ code: "EMPTY_COMPOSITE", entityId: "E-003", message: "Epic has no stories." }]
+  };
+  const dependencies = {
+    entities: [],
+    edges: [
+      { from: "T-001", to: "T-003", type: "task" },
+      { from: "S-001", to: "S-002", type: "story" },
+      { from: "E-001", to: "E-002", type: "epic" },
+      // Archived or missing endpoints have no visible row and must not disturb the order.
+      { from: "T-002", to: "T-999", type: "task" }
+    ]
+  };
+  const snapshot = JSON.stringify(unorderedBoard);
+  const ordered = orderBoardByDependencies(unorderedBoard, dependencies);
+
+  assert.deepEqual(boardOutline(ordered), [
+    ["E-002", [["S-003", ["T-005"]]]],
+    [
+      "E-001",
+      [
+        ["S-002", ["T-004"]],
+        ["S-001", ["T-002", "T-003", "T-001"]]
+      ]
+    ],
+    ["E-003", []]
+  ]);
+  assert.deepEqual(ordered.validationWarnings, unorderedBoard.validationWarnings);
+  assert.equal(JSON.stringify(unorderedBoard), snapshot, "the server response must not be mutated");
+  // Reordering is idempotent, so repeated refreshes of the same snapshot render identically.
+  assert.deepEqual(boardOutline(orderBoardByDependencies(ordered, dependencies)), boardOutline(ordered));
+});
+
+test("dependencies between lower layers order the ancestors that hold them", () => {
+  const unorderedBoard = {
+    epics: [
+      composite("E-001", "epic", [composite("S-001", "story", [task("T-001", "Waits on other epic", "todo", "blocked", ["T-003"], ["T-003"])])]),
+      composite("E-002", "epic", [
+        composite("S-002", "story", [task("T-002", "Waits on sibling story", "todo", "blocked", ["T-003"], ["T-003"])]),
+        composite("S-003", "story", [task("T-003", "Shared prerequisite", "todo", "todo", [])])
+      ])
+    ]
+  };
+  const dependencies = {
+    entities: [],
+    edges: [
+      { from: "T-001", to: "T-003", type: "task" },
+      { from: "T-002", to: "T-003", type: "task" }
+    ]
+  };
+
+  assert.deepEqual(boardOutline(orderBoardByDependencies(unorderedBoard, dependencies)), [
+    [
+      "E-002",
+      [
+        ["S-003", ["T-003"]],
+        ["S-002", ["T-002"]]
+      ]
+    ],
+    ["E-001", [["S-001", ["T-001"]]]]
+  ]);
+});
+
+test("conflicting inferred constraints fall back to id order without dropping rows", () => {
+  // The shared fixture has S-002 depending on S-001 while a task in S-001 waits on a task in S-002.
+  assert.deepEqual(boardOutline(orderBoardByDependencies(board, graph)), [
+    [
+      "E-001",
+      [
+        ["S-001", ["T-001", "T-002"]],
+        ["S-002", ["T-003"]]
+      ]
+    ],
+    ["E-002", [["S-003", ["T-004"]]]]
+  ]);
 });
 
 test("task graph scopes by epic and renders prerequisite to dependent edges", () => {
@@ -269,6 +361,27 @@ function task(id, title, status, effectiveStatus, blockedBy, dependsOn = []) {
     dependsOn,
     tags: []
   };
+}
+
+/** Build an epic or story fixture node; status fields are irrelevant to ordering assertions. */
+function composite(id, type, children) {
+  return {
+    id,
+    type,
+    title: `${type} ${id}`,
+    effectiveStatus: children.length === 0 ? "empty" : "todo",
+    blockedBy: [],
+    progress: { done: 0, total: 0 },
+    children
+  };
+}
+
+/** Reduce a board to nested ids so ordering assertions read as the visible top-to-bottom tree. */
+function boardOutline(boardResponse) {
+  return boardResponse.epics.map((epic) => [
+    epic.id,
+    epic.children.map((story) => [story.id, story.children.map((child) => child.id)])
+  ]);
 }
 
 function graphEntity(id, title, status, effectiveStatus, type = "task") {

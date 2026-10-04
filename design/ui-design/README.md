@@ -134,6 +134,13 @@ determine what each view shows.
     active work in flight).
   - `epicStatus`: rolls up its stories' rolled-up statuses.
 
+- **`orderBoardByDependencies(board, graph)`** — reorders each sibling group (epics, an epic's
+  stories, a story's tasks) so prerequisites sit above their dependents, giving the **Board** tab a
+  top-to-bottom reading of project progression. Ids break ties, so unlinked siblings stay in id
+  order. A dependency between entities in different groups orders the nearest sibling ancestors
+  (a task waiting on a task in another story lists that story first). Conflicting inferred
+  constraints fall back to id order. Display-only; Ready and Blocked stay sorted by id.
+
 - **`readyTasks(board)`** — non-archived tasks with stored status `todo` AND (no deps OR every dep
   is `done`). Sorted by id ascending. This is the **Ready** tab.
 

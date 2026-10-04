@@ -199,6 +199,92 @@ export function indexBoard(board: BoardResponse): BoardIndex {
 }
 
 /**
+ * Reorder a board snapshot so every sibling group reads top to bottom in dependency order.
+ *
+ * The server emits epics, stories, and tasks sorted by id, which says nothing about which work has
+ * to happen first. The Board tab is meant to show project progression, so each sibling group (the
+ * epics, the stories of one epic, the tasks of one story) is topologically sorted with prerequisites
+ * above the work that waits on them. Ids break ties, so the result is deterministic and a board with
+ * no dependencies keeps the server's id order.
+ *
+ * Ordering constraints come from the same-type edges of `/api/:project/graph`:
+ *
+ * - An edge between two siblings orders those siblings directly.
+ * - An edge between entities in different groups orders the nearest ancestors that are siblings.
+ *   For example, a task that depends on a task in another story places that other story first,
+ *   and a story that depends on a story in another epic places that other epic first. This keeps
+ *   the top-to-bottom reading useful when only the lower layers are linked.
+ *
+ * This is a pure presentation transform: it returns new arrays and never mutates the response,
+ * changes statuses, or drops rows. Edges that reference entities outside the active board (archived
+ * or missing) are ignored because there is no visible row to order against.
+ */
+export function orderBoardByDependencies(board: BoardResponse, graph: GraphResponse): BoardResponse {
+  // Parent lookup for every active board entity; epics map to null so that all epics count as one
+  // sibling group in the ancestor walk below.
+  const parentById = new Map<EntityId, EntityId | null>();
+
+  for (const epic of board.epics) {
+    parentById.set(epic.id, null);
+
+    for (const story of epic.children) {
+      parentById.set(story.id, epic.id);
+
+      for (const task of story.children) {
+        parentById.set(task.id, story.id);
+      }
+    }
+  }
+
+  // Sibling id -> ids of siblings that must be listed above it.
+  const prerequisitesById = new Map<EntityId, Set<EntityId>>();
+
+  for (const edge of graph.edges) {
+    // API edges point from the dependent (`from`) to its prerequisite (`to`).
+    let dependentId: EntityId = edge.from;
+    let prerequisiteId: EntityId = edge.to;
+
+    // Climb both ancestor chains in lockstep until the pair shares a parent. Edges are same-type,
+    // so both chains have equal depth and reach the epic layer (parent null) together.
+    while (dependentId !== prerequisiteId) {
+      const dependentParent = parentById.get(dependentId);
+      const prerequisiteParent = parentById.get(prerequisiteId);
+
+      if (dependentParent === undefined || prerequisiteParent === undefined) {
+        // At least one endpoint is not on the active board, so it cannot constrain visible rows.
+        break;
+      }
+
+      if (dependentParent === prerequisiteParent) {
+        const prerequisites = prerequisitesById.get(dependentId) ?? new Set<EntityId>();
+        prerequisites.add(prerequisiteId);
+        prerequisitesById.set(dependentId, prerequisites);
+        break;
+      }
+
+      if (dependentParent === null || prerequisiteParent === null) {
+        // Defensive guard for a malformed cross-type edge; same-type edges never reach this.
+        break;
+      }
+
+      dependentId = dependentParent;
+      prerequisiteId = prerequisiteParent;
+    }
+  }
+
+  return {
+    ...board,
+    epics: orderSiblingsByDependencies(board.epics, prerequisitesById).map((epic) => ({
+      ...epic,
+      children: orderSiblingsByDependencies(epic.children, prerequisitesById).map((story) => ({
+        ...story,
+        children: orderSiblingsByDependencies(story.children, prerequisitesById)
+      }))
+    }))
+  };
+}
+
+/**
  * Return the current Ready tab rows.
  *
  * The server has already applied dependency and downward gate propagation. A task is ready when it
@@ -521,6 +607,37 @@ function graphEntity(
     epicId: epic.id,
     storyId: story.id
   };
+}
+
+/**
+ * Topologically sort one sibling group so prerequisites come before their dependents.
+ *
+ * Each step emits the lowest-id sibling whose prerequisites have all been emitted, which yields the
+ * same order for the same input regardless of the order the server returned the rows in. Validation
+ * rejects explicit dependency cycles, but constraints inferred from descendants can still disagree
+ * (story A holds a task waiting on story B while B holds a task waiting on A). When no sibling is
+ * free, the lowest remaining id is emitted so the sort always terminates and never drops a row.
+ */
+function orderSiblingsByDependencies<T extends { id: EntityId }>(
+  siblings: ReadonlyArray<T>,
+  prerequisitesById: ReadonlyMap<EntityId, ReadonlySet<EntityId>>
+): T[] {
+  const remaining = [...siblings].sort((left, right) => left.id.localeCompare(right.id));
+  const placed = new Set<EntityId>();
+  const ordered: T[] = [];
+
+  while (remaining.length > 0) {
+    const freeIndex = remaining.findIndex((sibling) =>
+      [...(prerequisitesById.get(sibling.id) ?? [])].every((prerequisiteId) => placed.has(prerequisiteId))
+    );
+    // Index 0 is the lowest remaining id, used as the cycle fallback described above.
+    const [next] = remaining.splice(freeIndex === -1 ? 0 : freeIndex, 1);
+
+    ordered.push(next);
+    placed.add(next.id);
+  }
+
+  return ordered;
 }
 
 /**
