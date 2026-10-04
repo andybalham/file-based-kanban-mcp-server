@@ -95,27 +95,47 @@ test("board row helpers only collapse visible groups and format blocked notes", 
   assert.equal(blockedByNote(board.epics[0].children[0].children[1]), "waiting on T-003");
 });
 
-test("done epics and stories with children start collapsed while unfinished groups stay open", () => {
-  // A done story inside an unfinished epic must collapse on its own, and a done composite with no
-  // children must be skipped because it has no rows to hide.
+test("only todo and in-progress epics and stories with children start expanded", () => {
+  // Builds a story with one task so each status can be checked as a collapsible group.
+  const storyWithStatus = (id, effectiveStatus) => ({
+    id,
+    type: "story",
+    title: `${effectiveStatus} story`,
+    effectiveStatus,
+    blockedBy: [],
+    progress: { done: 0, total: 1 },
+    children: [task(`T-${id}`, "Task", "todo", "todo", [])]
+  });
+
+  // The in-progress epic must stay open while its done and blocked stories collapse on their own.
+  // The shared fixture adds a blocked epic and a done epic, which collapse along with their stories,
+  // and a done composite with no children must be skipped because it has no rows to hide.
   const boardWithMixedGroups = {
     epics: [
       {
-        ...board.epics[0],
+        id: "E-010",
+        type: "epic",
+        title: "In-progress epic",
+        effectiveStatus: "in-progress",
+        blockedBy: [],
+        progress: { done: 0, total: 4 },
         children: [
-          ...board.epics[0].children,
-          {
-            id: "S-005",
-            type: "story",
-            title: "Done story in open epic",
-            effectiveStatus: "done",
-            blockedBy: [],
-            progress: { done: 1, total: 1 },
-            children: [task("T-005", "Another done task", "done", "done", [])]
-          }
+          storyWithStatus("S-010", "todo"),
+          storyWithStatus("S-011", "in-progress"),
+          storyWithStatus("S-012", "done"),
+          storyWithStatus("S-013", "blocked")
         ]
       },
-      board.epics[1],
+      {
+        id: "E-011",
+        type: "epic",
+        title: "Todo epic",
+        effectiveStatus: "todo",
+        blockedBy: [],
+        progress: { done: 0, total: 1 },
+        children: [storyWithStatus("S-014", "todo")]
+      },
+      ...board.epics,
       {
         id: "E-004",
         type: "epic",
@@ -128,7 +148,15 @@ test("done epics and stories with children start collapsed while unfinished grou
     ]
   };
 
-  assert.deepEqual(defaultCollapsedBoardIds(boardWithMixedGroups), ["S-005", "E-002", "S-003"]);
+  assert.deepEqual(defaultCollapsedBoardIds(boardWithMixedGroups), [
+    "S-012",
+    "S-013",
+    "E-001",
+    "S-001",
+    "S-002",
+    "E-002",
+    "S-003"
+  ]);
   assert.deepEqual(defaultCollapsedBoardIds(null), []);
 });
 

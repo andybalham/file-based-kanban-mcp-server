@@ -353,11 +353,14 @@ export function collapsibleBoardIds(board: BoardResponse | null): EntityId[] {
 /**
  * Return the collapsible epic/story ids that should start collapsed when a board is first shown.
  *
- * Finished groups are no longer actionable, so the Board opens with them folded away and leaves the
- * remaining work visible. Only server-computed `done` composites qualify: `empty` groups have no
- * children to hide, and every other status still contains work a reader needs to see. Done stories
- * are included even when their epic is also done so that expanding a finished epic reveals compact
- * story rows instead of every completed task at once.
+ * The Board opens showing only work that can be picked up or is already moving: an epic or story
+ * starts expanded only when its server-computed status is `todo` or `in-progress`. Every other
+ * status (`done`, `blocked`) starts folded away so the first screen is not dominated by
+ * rows nobody can act on. `empty` groups never appear here because they have no children to hide.
+ *
+ * The same rule is applied to every story regardless of its epic's state. Inside an expanded epic
+ * that leaves only the `todo` / `in-progress` stories open, and when a reader expands a collapsed
+ * epic by hand it reveals compact story rows rather than every task at once.
  *
  * The result is a subset of `collapsibleBoardIds`, in the same order, which keeps the
  * "Collapse all / Expand all" control consistent with the rows this default actually affects.
@@ -368,11 +371,21 @@ export function defaultCollapsedBoardIds(board: BoardResponse | null): EntityId[
   }
 
   return board.epics.flatMap((epic) => [
-    ...(epic.children.length > 0 && epic.effectiveStatus === "done" ? [epic.id] : []),
+    ...(epic.children.length > 0 && !startsExpanded(epic.effectiveStatus) ? [epic.id] : []),
     ...epic.children.flatMap((story) =>
-      story.children.length > 0 && story.effectiveStatus === "done" ? [story.id] : []
+      story.children.length > 0 && !startsExpanded(story.effectiveStatus) ? [story.id] : []
     )
   ]);
+}
+
+/**
+ * Decide whether a composite with this computed status is expanded when a board is first shown.
+ *
+ * Kept as an allow-list of the two actionable statuses so any status added to the API later starts
+ * collapsed by default instead of silently widening the initial view.
+ */
+function startsExpanded(status: EffectiveStatus): boolean {
+  return status === "todo" || status === "in-progress";
 }
 
 /**

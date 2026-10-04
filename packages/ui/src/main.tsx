@@ -165,7 +165,8 @@ function App() {
   /**
    * Project whose default collapse state has already been seeded from a loaded board.
    *
-   * Done epics and stories start collapsed, but only for the first snapshot of a project. Tracking
+   * Epics and stories that are not `todo` or `in-progress` start collapsed, but only for the first
+   * snapshot of a project. Tracking
    * the seeded project keeps WebSocket-triggered refreshes from re-collapsing rows the user has
    * opened by hand.
    */
@@ -208,7 +209,8 @@ function App() {
           return;
         }
 
-        // Seed the local collapse set once per project so finished epics and stories open folded.
+        // Seed the local collapse set once per project so only todo and in-progress epics and
+        // stories open expanded.
         // Later refreshes for the same project leave the set alone to preserve manual toggles.
         if (collapseSeededProjectRef.current !== projectId) {
           collapseSeededProjectRef.current = projectId;
