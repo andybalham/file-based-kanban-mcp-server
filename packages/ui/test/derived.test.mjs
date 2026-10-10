@@ -5,7 +5,9 @@ import {
   blockedTasks,
   buildTaskGraph,
   blockedByNote,
+  boardWithEpicVisibility,
   collapsibleBoardIds,
+  countDoneEpics,
   defaultCollapsedBoardIds,
   indexBoard,
   layoutGraph,
@@ -158,6 +160,26 @@ test("only todo and in-progress epics and stories with children start expanded",
     "S-003"
   ]);
   assert.deepEqual(defaultCollapsedBoardIds(null), []);
+});
+
+test("done epics are hidden from the board unless the reader asks to show them", () => {
+  assert.equal(countDoneEpics(board), 1);
+  assert.equal(countDoneEpics(null), 0);
+
+  const hidden = boardWithEpicVisibility(board, false);
+
+  // Only the epic's own status decides visibility, and the source snapshot is left untouched.
+  assert.deepEqual(
+    hidden.epics.map((epic) => epic.id),
+    ["E-001"]
+  );
+  assert.equal(board.epics.length, 2);
+  // Collapse controls built from the filtered board must not reference the hidden rows.
+  assert.deepEqual(collapsibleBoardIds(hidden), ["E-001", "S-001", "S-002"]);
+
+  // Showing done epics, or having none to hide, returns the same snapshot object.
+  assert.equal(boardWithEpicVisibility(board, true), board);
+  assert.equal(boardWithEpicVisibility(hidden, false), hidden);
 });
 
 test("board siblings are listed prerequisites first at every level with ids breaking ties", () => {

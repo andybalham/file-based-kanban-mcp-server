@@ -35,8 +35,10 @@ import { copyCommitLabel, copyImplementationPrompt, formatCommitLabel } from "./
 import {
   blockedByNote,
   blockedTasks,
+  boardWithEpicVisibility,
   buildTaskGraph,
   collapsibleBoardIds,
+  countDoneEpics,
   defaultCollapsedBoardIds,
   graphDisplayStatus,
   indexBoard,
@@ -158,7 +160,26 @@ function App() {
     [projects, selectedProjectId]
   );
   const counts = useMemo(() => summarizeBoard(data.board), [data.board]);
-  const collapsibleIds = useMemo(() => collapsibleBoardIds(data.board), [data.board]);
+  /**
+   * Whether finished epics are listed on the Board tab.
+   *
+   * Local, non-persisted view state like `collapsed`: it defaults to hidden so the hierarchy leads
+   * with open work, and it is deliberately kept across project switches because it expresses how
+   * the reader wants to look at boards rather than anything about one project.
+   */
+  const [showDoneEpics, setShowDoneEpics] = useState(false);
+  const doneEpicCount = useMemo(() => countDoneEpics(data.board), [data.board]);
+  /**
+   * Board snapshot as the Board tab renders it, with done epics removed unless the reader opted in.
+   *
+   * Only the Board hierarchy and its collapse controls read this. Counts and the other tabs keep
+   * using `data.board` so hiding finished epics never changes a reported number.
+   */
+  const visibleBoard = useMemo(
+    () => (data.board === null ? null : boardWithEpicVisibility(data.board, showDoneEpics)),
+    [data.board, showDoneEpics]
+  );
+  const collapsibleIds = useMemo(() => collapsibleBoardIds(visibleBoard), [visibleBoard]);
   const hasExpandedRows = collapsibleIds.some((id) => !collapsed.has(id));
   const selectedProjectRef = useRef<ProjectId | null>(selectedProjectId);
   const refreshSequenceRef = useRef(0);
@@ -362,9 +383,24 @@ function App() {
     });
   }, []);
 
-  /** Collapse or expand every visible epic/story row without mutating server state. */
+  /**
+   * Collapse or expand every visible epic/story row without mutating server state.
+   *
+   * Only the ids currently on screen are added or removed. Hidden done epics keep whatever collapse
+   * state they had, so revealing them later does not show them unexpectedly expanded.
+   */
   const toggleAllCollapsed = useCallback(() => {
-    setCollapsed(hasExpandedRows ? new Set(collapsibleIds) : new Set());
+    setCollapsed((currentCollapsed) => {
+      const nextCollapsed = new Set(currentCollapsed);
+      for (const id of collapsibleIds) {
+        if (hasExpandedRows) {
+          nextCollapsed.add(id);
+        } else {
+          nextCollapsed.delete(id);
+        }
+      }
+      return nextCollapsed;
+    });
   }, [collapsibleIds, hasExpandedRows]);
 
   /** Open the read-only drawer for an entity selected from any viewer surface. */
@@ -395,6 +431,17 @@ function App() {
           Graph
         </TabButton>
         <span className="tab-spacer" />
+        {/* View-only toggle: offered only when the project actually has finished epics to reveal. */}
+        {tab === "board" && doneEpicCount > 0 ? (
+          <button
+            className="text-button"
+            type="button"
+            aria-pressed={showDoneEpics}
+            onClick={() => setShowDoneEpics((wasShown) => !wasShown)}
+          >
+            {showDoneEpics ? "Hide done epics" : `Show done epics (${doneEpicCount})`}
+          </button>
+        ) : null}
         {tab === "board" && collapsibleIds.length > 0 ? (
           <button className="text-button" type="button" onClick={toggleAllCollapsed}>
             {hasExpandedRows ? "Collapse all" : "Expand all"}
@@ -409,6 +456,7 @@ function App() {
           <ValidationWarningsPanel board={data.board} onOpenEntity={openEntity} />
           <ActiveView
             board={data.board}
+            boardTabBoard={visibleBoard}
             collapsed={collapsed}
             counts={counts}
             graph={data.graph}
@@ -694,6 +742,7 @@ function validationWarningKey(warning: ValidationIssue): string {
 /** Select the currently active read-only view for the loaded board. */
 function ActiveView({
   board,
+  boardTabBoard,
   collapsed,
   counts,
   graph,
@@ -706,6 +755,8 @@ function ActiveView({
   toggleCollapsed
 }: {
   board: BoardResponse | null;
+  /** Board with done epics filtered per the reader's toggle; used by the Board tab only. */
+  boardTabBoard: BoardResponse | null;
   collapsed: Set<string>;
   counts: BoardCounts;
   graph: GraphResponse | null;
@@ -735,9 +786,15 @@ function ActiveView({
         return <EmptyState title="This project has no entities yet" body="Tracked epics, stories, and tasks will appear here." />;
       }
 
+      // Every epic is finished and hidden. Say so explicitly instead of rendering a blank card, and
+      // point at the tab-bar toggle that brings the rows back.
+      if (boardTabBoard === null || boardTabBoard.epics.length === 0) {
+        return <EmptyState title="All epics are done" body='Use "Show done epics" above to list finished work.' />;
+      }
+
       return (
         <BoardPreview
-          board={board}
+          board={boardTabBoard}
           collapsed={collapsed}
           onOpenEntity={onOpenEntity}
           showIds={showIds}

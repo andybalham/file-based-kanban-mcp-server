@@ -334,6 +334,35 @@ export function summarizeBoard(board: BoardResponse | null): BoardCounts {
 }
 
 /**
+ * Count the epics whose server-computed status is `done`.
+ *
+ * The Board tab hides these epics by default, so the shell uses this count both to decide whether
+ * the "show done epics" toggle is worth rendering and to tell the reader how many rows are hidden.
+ */
+export function countDoneEpics(board: BoardResponse | null): number {
+  return board === null ? 0 : board.epics.filter((epic) => epic.effectiveStatus === "done").length;
+}
+
+/**
+ * Return the board the Board tab should render for the reader's "show done epics" choice.
+ *
+ * Finished epics are hidden by default so the hierarchy leads with work that is still open. This is
+ * a pure presentation filter over the already-ordered snapshot: it never mutates the response, and
+ * it only inspects the epic's own computed status, so done stories inside an unfinished epic stay
+ * visible. Tab counts, the header metrics, and the Ready, Blocked, and Graph views keep reading the
+ * unfiltered board so hiding rows here never changes any reported number.
+ *
+ * The same object is returned when nothing is filtered out, which keeps memoized consumers stable.
+ */
+export function boardWithEpicVisibility(board: BoardResponse, showDoneEpics: boolean): BoardResponse {
+  if (showDoneEpics || countDoneEpics(board) === 0) {
+    return board;
+  }
+
+  return { ...board, epics: board.epics.filter((epic) => epic.effectiveStatus !== "done") };
+}
+
+/**
  * Return epic/story ids that have visible children and therefore can participate in local collapse.
  *
  * Empty composites are not included because collapsing them would create local state with no visible
