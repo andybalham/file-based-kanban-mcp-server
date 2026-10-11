@@ -1,4 +1,4 @@
-import type { EntityDetail } from "./api";
+import type { EntityDetail, ProjectSummary } from "./api";
 
 /** Minimal Clipboard shape used by the drawer so tests can inject a deterministic fake. */
 export interface ClipboardWriter {
@@ -30,11 +30,22 @@ export async function copyCommitLabel(entity: Pick<EntityDetail, "id" | "title">
 export type ImplementationPromptEntity = Pick<EntityDetail, "id" | "type" | "title">;
 
 /**
+ * Project fields the implementation prompt needs; a subset of the picker's project summary.
+ *
+ * Only the human-readable `title` is used: the prompt never prints the opaque `wt_...` project id,
+ * so the agent resolves the project by name through the MCP server (for example `list_projects`).
+ */
+export type ImplementationPromptProject = Pick<ProjectSummary, "title">;
+
+/**
  * Format a prompt that asks an LLM coding agent to implement the drawer's current entity.
  *
  * The prompt is deliberately pointer-based: it names the entity and tells the agent to fetch the
  * description, dependencies, and children from the file-based Kanban MCP server, so the copied text
- * can never go stale against the frontmatter that is authoritative for the project. Three operator
+ * can never go stale against the frontmatter that is authoritative for the project. The prompt
+ * is written in names a human recognises: the project by its title rather than its opaque `wt_...`
+ * id, and the entity by its `<id>: <title>` label rather than an `entity://` resource URI, leaving
+ * the agent to resolve both through the MCP server. Three operator
  * rules are always present: use the MCP server for board access, delegate the implementation to a
  * sub-agent on a model that fits the task, and never commit, because committing is the operator's
  * responsibility. Status is the agent's to update (`in-progress` on start, `done` once checks pass).
@@ -46,8 +57,9 @@ export type ImplementationPromptEntity = Pick<EntityDetail, "id" | "type" | "tit
  * This stays a pure string builder: the viewer remains read-only and the exact wording is covered
  * by tests without mounting React.
  */
-export function formatImplementationPrompt(entity: ImplementationPromptEntity, projectId: string): string {
-  const entityResource = `entity://${projectId}/${entity.id}`;
+export function formatImplementationPrompt(entity: ImplementationPromptEntity, project: ImplementationPromptProject): string {
+  // Reuse the commit label so the prompt and the drawer's other copy action name the entity identically.
+  const entityLabel = formatCommitLabel(entity);
   // Per-task work shared by the story and epic prompts, so both delegate and verify identically.
   const delegateStep =
     "then delegate its implementation to a sub-agent, choosing a model suited to the task's complexity, and have it follow the repository's agent instructions.";
@@ -60,7 +72,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
     entity.type === "epic"
       ? [
           // Epics pause at every story boundary so the operator reviews and commits one story at a time.
-          `Read \`${entityResource}\` and its stories and tasks through the MCP server for the descriptions, dependencies, and acceptance criteria.`,
+          `Read \`${entityLabel}\` and its stories and tasks through the MCP server for the descriptions, dependencies, and acceptance criteria.`,
           `Use \`query_ready\` to choose a story under ${entity.id} that has a ready task, and work on that story only; if no task is ready, stop and report what is blocking.`,
           `Pick the next ready task in that story, set it to \`in-progress\` with \`set_status\`, ${delegateStep}`,
           ...checkSteps,
@@ -69,7 +81,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
         ]
       : entity.type === "task"
       ? [
-          `Read \`${entityResource}\` and its parent through the MCP server for the description, dependencies, and acceptance criteria.`,
+          `Read \`${entityLabel}\` and its parent through the MCP server for the description, dependencies, and acceptance criteria.`,
           "Check that every dependency is done; if any is not, stop and report instead of starting.",
           `Set ${entity.id} to \`in-progress\` with \`set_status\`.`,
           "Delegate the implementation to a sub-agent, choosing a model suited to the task's complexity, and have it follow the repository's agent instructions.",
@@ -78,7 +90,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
           "Never commit: committing is my responsibility, not yours. Report what changed and leave the changes uncommitted for me to review and commit."
         ]
       : [
-          `Read \`${entityResource}\` and its children through the MCP server for the descriptions, dependencies, and acceptance criteria.`,
+          `Read \`${entityLabel}\` and its children through the MCP server for the descriptions, dependencies, and acceptance criteria.`,
           `Use \`query_ready\` to pick the next ready task under ${entity.id}; if none is ready, stop and report what is blocking.`,
           `Set that task to \`in-progress\` with \`set_status\`, ${delegateStep}`,
           ...checkSteps,
@@ -87,7 +99,7 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
         ];
 
   return [
-    `Implement ${entity.type} ${entity.id} "${entity.title}" from the kanban project \`${projectId}\`.`,
+    `Implement ${entity.type} ${entity.id} "${entity.title}" from the kanban project "${project.title}".`,
     "",
     "Use the file-based Kanban MCP server for every board read and update.",
     "",
@@ -102,10 +114,10 @@ export function formatImplementationPrompt(entity: ImplementationPromptEntity, p
  */
 export async function copyImplementationPrompt(
   entity: ImplementationPromptEntity,
-  projectId: string,
+  project: ImplementationPromptProject,
   clipboard: ClipboardWriter | undefined
 ): Promise<string> {
-  return writeToClipboard(formatImplementationPrompt(entity, projectId), clipboard);
+  return writeToClipboard(formatImplementationPrompt(entity, project), clipboard);
 }
 
 /** Write text to the supplied clipboard, failing loudly when the browser exposes none. */

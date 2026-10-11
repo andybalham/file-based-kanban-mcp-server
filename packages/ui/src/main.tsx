@@ -477,6 +477,8 @@ function App() {
           board={data.board}
           initialEntityId={selectedEntityId}
           projectId={selectedProjectId}
+          // Fall back to the id so the prompt still names a project if the summary is not loaded yet.
+          projectTitle={selectedProject?.title ?? selectedProjectId}
           refreshToken={pulseToken}
           onClose={() => setSelectedEntityId(null)}
         />
@@ -1957,6 +1959,7 @@ function EntityDrawer({
   board,
   initialEntityId,
   projectId,
+  projectTitle,
   refreshToken,
   onClose
 }: {
@@ -1964,6 +1967,8 @@ function EntityDrawer({
   board: BoardResponse | null;
   initialEntityId: EntityId;
   projectId: ProjectId;
+  /** Human-readable project title, used only to name the project in the copied LLM prompt. */
+  projectTitle: string;
   refreshToken: number;
   onClose(): void;
 }) {
@@ -2101,14 +2106,14 @@ function EntityDrawer({
     }
 
     try {
-      await copyImplementationPrompt(detail, projectId, navigator.clipboard);
+      await copyImplementationPrompt(detail, { title: projectTitle }, navigator.clipboard);
       setPromptCopyState("copied");
     } catch {
       setPromptCopyState("failed");
     }
 
     promptCopyTimerRef.current = window.setTimeout(() => setPromptCopyState("idle"), 1800);
-  }, [detail, projectId]);
+  }, [detail, projectTitle]);
 
   /**
    * Match the prototype keyboard model: Escape closes; Backspace walks relation history first.
